@@ -1,8 +1,8 @@
-### Cercus - User Guide
+# Cercus - User Guide
 
 **Cercus** is a multiprocess, closed-loop stimulus control framework designed for high-temporal-precision behavioral and neuroscience experiments. Built on a Master-Worker architecture, it physically decouples UI scheduling, visual rendering, hardware telemetry, and data persistence.
 
-#### 1. Architecture Overview
+## 1. Architecture Overview
 
 The system enforces strict unidirectional data flow and functional isolation:
 
@@ -12,7 +12,7 @@ The system enforces strict unidirectional data flow and functional isolation:
 - **Asynchronous Hardware Daemon (`core_hardware.py`)**: A serial communication layer guarded by an independent thread, handling high-frequency sensor data acquisition and TTL trigger signal dispatch.
 - **Dual-Track Logger (`core_logger.py`)**: Separates high-frequency kinematics telemetry (Kinematics Log) from low-frequency experimental state transitions (Event Log).
 
-#### 2. Core Features & Execution Modes
+## 2. Core Features & Execution Modes
 
 - **Dual-Track Execution Mode**:
     - **Auto**: Standard procedure for behavioral assays. Continuously executes the entire session automatically based on randomized ITI/ISI intervals.
@@ -20,7 +20,7 @@ The system enforces strict unidirectional data flow and functional isolation:
 - **Digital Twin Monitor**: The master UI includes a real-time miniature monitor that maps the 3840x1080 dual-screen stimulus state to the control panel.
 - **Hardware Fallback**: If no hardware is available, the serial port can be set to `mock` to inject a virtual data stream, ensuring the debugging pipeline remains uninterrupted.
 
-#### 3. Built-in Paradigms
+## 3. Built-in Paradigms
 
 The system currently includes two standard paradigm matrices, both accessible via the UI dropdown menu:
 
@@ -31,7 +31,7 @@ The system currently includes two standard paradigm matrices, both accessible vi
     - A pure visual parameterized model. Supports dynamic UI configuration of `l/v Ratio (ms)`, `Initial Degree`, and `Final Degree`.
     - Supports presentation logic: `Random L/R`, `Always Left`, and `Always Right`.
 
-#### 4. Installation
+## 4. Installation
 
 It is recommended to run this system within an isolated virtual environment (e.g., Conda). Core dependencies include UI, visual rendering, and hardware communication modules:
 
@@ -39,7 +39,7 @@ It is recommended to run this system within an isolated virtual environment (e.g
 pip install -r requirements.txt
 ```
 
-#### 5. Running an Experiment
+## 5. Running an Experiment
 
 **Step 1: Launch the Dashboard**
 Execute the entry file in your terminal:
@@ -55,14 +55,14 @@ _Note: When **Debug Mode** is enabled, the renderer launches in a windowed mode 
 **Step 3: Execution and Monitoring**
 Click "Start Experiment". If in Manual mode, follow the status bar prompts to trigger via `Space`; if in Auto mode, the system will initiate the closed-loop process automatically.
 
-#### 6. Data Output Specifications
+## 6. Data Output Specifications
 
 Upon starting the experiment, the system automatically generates dual-track record files in the `data/` directory. Each session yields two files, strictly aligned via `global_trial_id` and timestamps:
 
 1. `{Subject}_session_{n}_events.csv`: Logs low-frequency control flow events (including variable-length JSON details).
 2. `{Subject}_session_{n}_kinematics.csv`: Logs extremely high-frequency closed-loop telemetry data (dx, dy, dz, etc.).
 
-#### 7. Extension: Adding New Paradigms
+## 7. Extension: Adding New Paradigms
 
 To introduce entirely new experimental paradigms, there is no need to modify the underlying rendering or control flow code. You simply need to:
 
