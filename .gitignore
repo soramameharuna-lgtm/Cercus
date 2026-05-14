@@ -1,0 +1,7 @@
+*.png
+.vscode
+__pycache__
+*.csv
+data
+.pio
+
