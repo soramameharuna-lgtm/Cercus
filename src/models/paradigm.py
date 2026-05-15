@@ -1,13 +1,65 @@
 import math
 import random
+import numpy as np
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Callable
 
 
 class BaseParadigm(ABC):
+    @staticmethod
+    def _apply_random_seed(config: dict) -> None:
+        raw = str(config.get("Random Seed", "Auto")).strip()
+        if raw.lower() in ("auto", ""):
+            seed = np.random.randint(0, 2**31 - 1)
+        else:
+            try:
+                seed = int(raw)
+            except ValueError:
+                seed = np.random.randint(0, 2**31 - 1)
+        random.seed(seed)
+        np.random.seed(seed)
+
+    @classmethod
+    def _schema_default(cls, key: str) -> Any:
+        return cls.get_parameter_schema()[key]["default"]
+
+    @classmethod
+    def get_telemetry_schema(cls) -> list:
+        """Return field definitions for hardware telemetry parsing.
+        Each entry: (raw_index, default_value, header_key)
+        """
+        return [
+            (0, 0, "ard_time"),
+            (1, 0, "dx"),
+            (2, 0, "dy"),
+            (3, 0, "dz"),
+            (4, 0, "stim_state"),
+        ]
+
+    @classmethod
+    def get_mock_generator(cls) -> Callable[[int], str]:
+        """Return a function that generates mock serial data for this paradigm."""
+
+        def generator(t_ard: int) -> str:
+            return f"{t_ard},0,0,0,0"
+
+        return generator
+
+    @classmethod
+    def get_sync_channels(cls) -> List[str]:
+        """Return named sync trigger channels for this paradigm.
+        Each entry generates a Sync Block row in the dashboard topology UI.
+        """
+        return ["Sync Trigger"]
+
     @classmethod
     @abstractmethod
     def get_available_patterns(cls) -> List[str]:
+        pass
+
+    @classmethod
+    @abstractmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
         pass
 
     @abstractmethod
@@ -21,19 +73,20 @@ class BaseParadigm(ABC):
     @abstractmethod
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict]:
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
         pass
 
     @abstractmethod
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
         pass
 
 
-class LoomingParadigm(BaseParadigm):
-    VIEWING_DISTANCE_CM = 30.0
-    SINGLE_SCREEN_WIDTH_CM = 53.0
-    SINGLE_SCREEN_WIDTH_PX = 1920
+# ---------------------------------------------------------------------------
+# Looming Paradigm (Multi-modal: Visual + Wind)
+# ---------------------------------------------------------------------------
 
+
+class LoomingParadigm(BaseParadigm):
     EXPERIMENT_PATTERNS = {
         "Baseline Visual": {
             "type": "baseline_visual",
@@ -83,6 +136,13 @@ class LoomingParadigm(BaseParadigm):
     }
 
     def __init__(self, debug_mode: bool = False, config: dict = None):
+        self.config = config or {}
+        self.viewing_distance_cm = float(self.config.get("Viewing Distance (cm)", 30.0))
+        self.screen_width_cm = float(self.config.get("Screen Width (cm)", 53.0))
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 3840))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+
         self.init_deg = 2.0
         self.max_deg = 179.0
         self._wind_triggered = False
@@ -90,17 +150,99 @@ class LoomingParadigm(BaseParadigm):
         self._baseline_post = 1.5
 
         self.scale = 0.3 if debug_mode else 1.0
-        self.c_l = -300 if debug_mode else -960
-        self.c_r = 300 if debug_mode else 960
-        self.mask_w = 600 if debug_mode else 1920
-        self.mask_h = 600 if debug_mode else 1080
+
+        if debug_mode:
+            self.per_screen_w_px = screen_w_px // 6
+            self.c_l = -screen_w_px // 12
+            self.c_r = screen_w_px // 12
+            self.mask_w = screen_w_px // 6
+            self.mask_h = screen_h_px // 3
+        else:
+            self.per_screen_w_px = screen_w_px // 2
+            self.c_l = -(screen_w_px // 4)
+            self.c_r = screen_w_px // 4
+            self.mask_w = screen_w_px // 2
+            self.mask_h = screen_h_px
 
         self.init_px = self._deg_to_pix(self.init_deg)
-        self.sync_size = self._deg_to_pix(2.0)
 
     @classmethod
     def get_available_patterns(cls) -> List[str]:
         return list(cls.EXPERIMENT_PATTERNS.keys())
+
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual"],
+                "label": "Execution Mode",
+            },
+            "note": {
+                "type": "info",
+                "label": "This paradigm has fixed experiment patterns. Select a pattern above.",
+            },
+        }
+
+    @classmethod
+    def get_sync_channels(cls) -> List[str]:
+        return ["Trial Active", "Phase Flip"]
+
+    def _build_stimulus_commands(self, side: str, theta: float) -> List[dict]:
+        r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
+        r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
+
+        bg_l = {
+            "id": "_bg_l",
+            "type": "rect",
+            "width": self.mask_w,
+            "height": self.mask_h,
+            "pos": (self.c_l, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+        bg_r = {
+            "id": "_bg_r",
+            "type": "rect",
+            "width": self.mask_w,
+            "height": self.mask_h,
+            "pos": (self.c_r, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+        stim_l = {
+            "id": "stim_l",
+            "type": "circle",
+            "radius": r_px_l,
+            "pos": (self.c_l, 0),
+            "fillColor": [-1, -1, -1],
+            "lineColor": [-1, -1, -1],
+        }
+        stim_r = {
+            "id": "stim_r",
+            "type": "circle",
+            "radius": r_px_r,
+            "pos": (self.c_r, 0),
+            "fillColor": [-1, -1, -1],
+            "lineColor": [-1, -1, -1],
+        }
+        bezel = {
+            "id": "_bezel",
+            "type": "rect",
+            "width": 100,
+            "height": self.mask_h * 1.5,
+            "pos": (0, 0),
+            "fillColor": [-1, -1, -1],
+            "lineColor": [-1, -1, -1],
+        }
+
+        if side == "left":
+            return [bg_l, stim_l, bg_r, stim_r, bezel]
+        elif side == "right":
+            return [bg_r, stim_r, bg_l, stim_l, bezel]
+        else:
+            return [bg_l, bg_r, stim_l, stim_r, bezel]
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
         p = self.EXPERIMENT_PATTERNS[pattern_key]
@@ -140,100 +282,30 @@ class LoomingParadigm(BaseParadigm):
 
     def _deg_to_pix(self, deg: float) -> float:
         deg = min(deg, 179.99)
-        r_cm = math.tan(math.radians(deg / 2.0)) * self.VIEWING_DISTANCE_CM
-        return (
-            r_cm
-            * (self.SINGLE_SCREEN_WIDTH_PX / self.SINGLE_SCREEN_WIDTH_CM)
-            * self.scale
-        )
+        r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
+        return r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
 
-    def _build_commands(
-        self, side: str, theta: float, is_baseline: bool = False
-    ) -> List[dict]:
-        r_px = self._deg_to_pix(theta)
-
-        mask_l = {
-            "id": "mask_l",
-            "type": "rect",
-            "width": self.mask_w,
-            "height": self.mask_h,
-            "pos": (self.c_l, 0),
-            "fillColor": [0, 0, 0],
-            "lineColor": [0, 0, 0],
-        }
-        mask_r = {
-            "id": "mask_r",
-            "type": "rect",
-            "width": self.mask_w,
-            "height": self.mask_h,
-            "pos": (self.c_r, 0),
-            "fillColor": [0, 0, 0],
-            "lineColor": [0, 0, 0],
-        }
-        stim_l = {
-            "id": "stim_l",
-            "type": "circle",
-            "radius": self.init_px,
-            "pos": (self.c_l, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
-        }
-        stim_r = {
-            "id": "stim_r",
-            "type": "circle",
-            "radius": self.init_px,
-            "pos": (self.c_r, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
-        }
-
-        sync_y = -self.mask_h / 2 + self.sync_size / 2
-        sync_off = self.mask_w / 2 - self.sync_size / 2
-        sync_l = {
-            "id": "sync_l",
-            "type": "rect",
-            "width": self.sync_size,
-            "height": self.sync_size,
-            "pos": (self.c_l - sync_off, sync_y),
-            "fillColor": [1, 1, 1],
-            "lineColor": [1, 1, 1],
-        }
-        sync_r = {
-            "id": "sync_r",
-            "type": "rect",
-            "width": self.sync_size,
-            "height": self.sync_size,
-            "pos": (self.c_r + sync_off, sync_y),
-            "fillColor": [1, 1, 1],
-            "lineColor": [1, 1, 1],
-        }
-
-        # 锁定图层渲染顺序：活动区 -> 遮罩区 -> 静态区 -> 同步块
-        if is_baseline or side == "both":
-            return [mask_l, mask_r, stim_l, stim_r]
-        elif side == "right":
-            stim_r["radius"] = r_px
-            return [stim_r, mask_l, stim_l, sync_r]
-        elif side == "left":
-            stim_l["radius"] = r_px
-            return [stim_l, mask_r, stim_r, sync_l]
-        return []
-
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
-        cmds = self._build_commands("both", self.init_deg, is_baseline=True)
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+        cmds = self._build_stimulus_commands("both", self.init_deg)
         tel = {
             "phase": "Idle",
-            "theta": self.init_deg,
-            "side": "—",
             "hw_cmd": None,
-            "twin_r_ratio": self.init_px / self.SINGLE_SCREEN_WIDTH_PX,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                "theta": self.init_deg,
+                "side": "—",
+                **hw_telemetry,
+            },
+            "ui_twin": {
+                "side": "—",
+                "radius_ratio": self.init_px / self.per_screen_w_px,
+            },
         }
-        tel.update(hw_telemetry)
-        return cmds, tel
+        return cmds, tel, [0, 0]
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict]:
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
         t_type = trial_context["type"]
         side = trial_context["screen_side"]
 
@@ -241,6 +313,8 @@ class LoomingParadigm(BaseParadigm):
         theta = self.init_deg
         hw_cmd = None
         phase = "Trial"
+        stim_active = 0
+        wind_active = 0
 
         if t_type in ["looming_wind", "baseline_visual"]:
             lv_s = trial_context.get("lv_ratio_ms", 100) / 1000.0
@@ -256,6 +330,7 @@ class LoomingParadigm(BaseParadigm):
                     theta = self.max_deg
                 theta = min(theta, self.max_deg)
                 phase = "Looming"
+                stim_active = 1
 
         elif t_type == "baseline_wind":
             wind_dir = trial_context.get("wind_dir", "none")
@@ -276,26 +351,38 @@ class LoomingParadigm(BaseParadigm):
             else:
                 phase = "Baseline"
                 side = "both" if not self._wind_triggered else side
+                if self._wind_triggered:
+                    wind_active = 1
 
-        cmds = self._build_commands(
-            side, theta, is_baseline=(t_type == "baseline_wind")
+        cmds = self._build_stimulus_commands(side, theta)
+        ui_color = (
+            "lime"
+            if phase == "Looming"
+            else ("orange" if phase == "Baseline" else "cyan")
         )
         tel = {
             "phase": phase,
-            "theta": theta,
-            "side": side,
             "hw_cmd": hw_cmd,
-            "twin_r_ratio": self._deg_to_pix(theta) / self.SINGLE_SCREEN_WIDTH_PX,
+            "ui_color": ui_color,
+            "ui_metrics": {
+                "theta": round(theta, 1),
+                "side": side,
+                **hw_telemetry,
+            },
+            "ui_twin": {
+                "side": side,
+                "radius_ratio": self._deg_to_pix(theta) / self.per_screen_w_px,
+            },
         }
-        tel.update(hw_telemetry)
-        return is_done, cmds, tel
+        return is_done, cmds, tel, [stim_active, wind_active]
+
+
+# ---------------------------------------------------------------------------
+# Classic Looming Paradigm (Visual only, configurable)
+# ---------------------------------------------------------------------------
 
 
 class ClassicLoomingParadigm(BaseParadigm):
-    VIEWING_DISTANCE_CM = 30.0
-    SINGLE_SCREEN_WIDTH_CM = 53.0
-    SINGLE_SCREEN_WIDTH_PX = 1920
-
     EXPERIMENT_PATTERNS = {
         "Classic Looming (Random L/R)": "Random L/R",
         "Classic Looming (Always Left)": "Always Left",
@@ -304,26 +391,98 @@ class ClassicLoomingParadigm(BaseParadigm):
 
     def __init__(self, debug_mode: bool = False, config: dict = None):
         self.config = config or {}
-        self.lv_ratio_ms = float(self.config.get("l/v Ratio (ms)", 80.0))
-        self.init_deg = float(self.config.get("Initial Degree (°)", 2.0))
-        self.max_deg = float(self.config.get("Final Degree (°)", 180.0))
+        self.viewing_distance_cm = float(self.config.get("Viewing Distance (cm)", 30.0))
+        self.screen_width_cm = float(self.config.get("Screen Width (cm)", 53.0))
+        self.lv_ratio_ms = float(
+            self.config.get("l/v Ratio (ms)", self._schema_default("l/v Ratio (ms)"))
+        )
+        self.init_deg = float(
+            self.config.get(
+                "Initial Degree (°)", self._schema_default("Initial Degree (°)")
+            )
+        )
+        self.max_deg = float(
+            self.config.get(
+                "Final Degree (°)", self._schema_default("Final Degree (°)")
+            )
+        )
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 3840))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
 
         self.scale = 0.3 if debug_mode else 1.0
-        self.c_l = -300 if debug_mode else -960
-        self.c_r = 300 if debug_mode else 960
-        self.mask_w = 600 if debug_mode else 1920
-        self.mask_h = 600 if debug_mode else 1080
+
+        if debug_mode:
+            self.per_screen_w_px = screen_w_px // 6
+            self.c_l = -screen_w_px // 12
+            self.c_r = screen_w_px // 12
+            self.mask_w = screen_w_px // 6
+            self.mask_h = screen_h_px // 3
+        else:
+            self.per_screen_w_px = screen_w_px // 2
+            self.c_l = -(screen_w_px // 4)
+            self.c_r = screen_w_px // 4
+            self.mask_w = screen_w_px // 2
+            self.mask_h = screen_h_px
 
         self.init_px = self._deg_to_pix(self.init_deg)
-        self.sync_size = self._deg_to_pix(2.0)
 
     @classmethod
     def get_available_patterns(cls) -> List[str]:
         return list(cls.EXPERIMENT_PATTERNS.keys())
 
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "l/v Ratio (ms)": {
+                "type": "float",
+                "default": 80.0,
+                "min": 1.0,
+                "max": 10000.0,
+                "label": "l/v Ratio (ms)",
+            },
+            "Initial Degree (°)": {
+                "type": "float",
+                "default": 2.0,
+                "min": 0.1,
+                "max": 179.0,
+                "label": "Initial Degree (°)",
+            },
+            "Final Degree (°)": {
+                "type": "float",
+                "default": 180.0,
+                "min": 1.0,
+                "max": 179.9,
+                "label": "Final Degree (°)",
+            },
+            "Number of Trials": {
+                "type": "int",
+                "default": 18,
+                "min": 1,
+                "max": 9999,
+                "label": "Number of Trials",
+            },
+            "Direction Mode": {
+                "type": "choice",
+                "default": "Random L/R",
+                "choices": ["Random L/R", "Always Left", "Always Right"],
+                "label": "Direction Mode",
+            },
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual"],
+                "label": "Execution Mode",
+            },
+        }
+
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
-        mode = self.EXPERIMENT_PATTERNS[pattern_key]
-        num_trials = int(self.config.get("Number of Trials", 18))
+        mode = self.EXPERIMENT_PATTERNS.get(pattern_key, pattern_key)
+        num_trials = int(
+            self.config.get(
+                "Number of Trials", self._schema_default("Number of Trials")
+            )
+        )
         trials = []
 
         if mode == "Always Left":
@@ -353,20 +512,19 @@ class ClassicLoomingParadigm(BaseParadigm):
 
     def _deg_to_pix(self, deg: float) -> float:
         deg = min(deg, 179.99)
-        r_cm = math.tan(math.radians(deg / 2.0)) * self.VIEWING_DISTANCE_CM
-        return (
-            r_cm
-            * (self.SINGLE_SCREEN_WIDTH_PX / self.SINGLE_SCREEN_WIDTH_CM)
-            * self.scale
-        )
+        r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
+        return r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
 
-    def _build_commands(
-        self, side: str, theta: float, is_baseline: bool = False
-    ) -> List[dict]:
-        r_px = self._deg_to_pix(theta)
+    @classmethod
+    def get_sync_channels(cls) -> List[str]:
+        return ["Trial Active", "Phase Flip"]
 
-        mask_l = {
-            "id": "mask_l",
+    def _build_stimulus_commands(self, side: str, theta: float) -> List[dict]:
+        r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
+        r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
+
+        bg_l = {
+            "id": "_bg_l",
             "type": "rect",
             "width": self.mask_w,
             "height": self.mask_h,
@@ -374,8 +532,8 @@ class ClassicLoomingParadigm(BaseParadigm):
             "fillColor": [0, 0, 0],
             "lineColor": [0, 0, 0],
         }
-        mask_r = {
-            "id": "mask_r",
+        bg_r = {
+            "id": "_bg_r",
             "type": "rect",
             "width": self.mask_w,
             "height": self.mask_h,
@@ -386,7 +544,7 @@ class ClassicLoomingParadigm(BaseParadigm):
         stim_l = {
             "id": "stim_l",
             "type": "circle",
-            "radius": self.init_px,
+            "radius": r_px_l,
             "pos": (self.c_l, 0),
             "fillColor": [-1, -1, -1],
             "lineColor": [-1, -1, -1],
@@ -394,59 +552,49 @@ class ClassicLoomingParadigm(BaseParadigm):
         stim_r = {
             "id": "stim_r",
             "type": "circle",
-            "radius": self.init_px,
+            "radius": r_px_r,
             "pos": (self.c_r, 0),
             "fillColor": [-1, -1, -1],
             "lineColor": [-1, -1, -1],
         }
-
-        sync_y = -self.mask_h / 2 + self.sync_size / 2
-        sync_off = self.mask_w / 2 - self.sync_size / 2
-        sync_l = {
-            "id": "sync_l",
+        bezel = {
+            "id": "_bezel",
             "type": "rect",
-            "width": self.sync_size,
-            "height": self.sync_size,
-            "pos": (self.c_l - sync_off, sync_y),
-            "fillColor": [1, 1, 1],
-            "lineColor": [1, 1, 1],
-        }
-        sync_r = {
-            "id": "sync_r",
-            "type": "rect",
-            "width": self.sync_size,
-            "height": self.sync_size,
-            "pos": (self.c_r + sync_off, sync_y),
-            "fillColor": [1, 1, 1],
-            "lineColor": [1, 1, 1],
+            "width": 100,
+            "height": self.mask_h * 1.5,
+            "pos": (0, 0),
+            "fillColor": [-1, -1, -1],
+            "lineColor": [-1, -1, -1],
         }
 
-        # 锁定图层渲染顺序：活动区 -> 遮罩区 -> 静态区 -> 同步块
-        if is_baseline or side == "both":
-            return [mask_l, mask_r, stim_l, stim_r]
+        if side == "left":
+            return [bg_l, stim_l, bg_r, stim_r, bezel]
         elif side == "right":
-            stim_r["radius"] = r_px
-            return [stim_r, mask_l, stim_l, sync_r]
-        elif side == "left":
-            stim_l["radius"] = r_px
-            return [stim_l, mask_r, stim_r, sync_l]
-        return []
+            return [bg_r, stim_r, bg_l, stim_l, bezel]
+        else:
+            return [bg_l, bg_r, stim_l, stim_r, bezel]
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
-        cmds = self._build_commands("both", self.init_deg, is_baseline=True)
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+        cmds = self._build_stimulus_commands("both", self.init_deg)
         tel = {
             "phase": "Idle",
-            "theta": self.init_deg,
-            "side": "—",
             "hw_cmd": None,
-            "twin_r_ratio": self.init_px / self.SINGLE_SCREEN_WIDTH_PX,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                "theta": self.init_deg,
+                "side": "—",
+                **hw_telemetry,
+            },
+            "ui_twin": {
+                "side": "—",
+                "radius_ratio": self.init_px / self.per_screen_w_px,
+            },
         }
-        tel.update(hw_telemetry)
-        return cmds, tel
+        return cmds, tel, [0, 0]
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict]:
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
         lv_s = trial_context["lv_ratio_ms"] / 1000.0
         init_deg = trial_context["initial_angle_deg"]
         final_deg = trial_context["final_angle_deg"]
@@ -457,6 +605,7 @@ class ClassicLoomingParadigm(BaseParadigm):
 
         is_done = False
         theta = init_deg
+        stim_active = 0
 
         if elapsed_time >= t_col + 1.0:
             is_done = True
@@ -467,22 +616,494 @@ class ClassicLoomingParadigm(BaseParadigm):
             else:
                 theta = final_deg
             theta = min(theta, final_deg)
+            stim_active = 1
 
-        cmds = self._build_commands(side, theta)
+        cmds = self._build_stimulus_commands(side, theta)
         tel = {
             "phase": "Looming",
-            "theta": theta,
-            "side": side,
             "hw_cmd": None,
-            "twin_r_ratio": self._deg_to_pix(theta) / self.SINGLE_SCREEN_WIDTH_PX,
+            "ui_color": "lime",
+            "ui_metrics": {
+                "theta": round(theta, 1),
+                "side": side,
+                **hw_telemetry,
+            },
+            "ui_twin": {
+                "side": side,
+                "radius_ratio": self._deg_to_pix(theta) / self.per_screen_w_px,
+            },
         }
-        tel.update(hw_telemetry)
-        return is_done, cmds, tel
+        return is_done, cmds, tel, [stim_active, 0]
 
 
-PARADIGM_REGISTRY = {
+# ---------------------------------------------------------------------------
+# Optic Flow Paradigm (Vectorized dot-motion)
+# ---------------------------------------------------------------------------
+
+
+class OpticFlowParadigm(BaseParadigm):
+    EXPERIMENT_PATTERNS = {
+        "Optic Flow": "optic_flow",
+    }
+
+    def __init__(self, debug_mode: bool = False, config: dict = None):
+        self.config = config or {}
+        self.speed = float(
+            self.config.get("Speed (deg/s)", self._schema_default("Speed (deg/s)"))
+        )
+        self.density = int(self.config.get("Density", self._schema_default("Density")))
+        self.coherence = float(
+            self.config.get("Coherence", self._schema_default("Coherence"))
+        )
+        self.direction = self.config.get("Direction", self._schema_default("Direction"))
+        self.trial_duration = float(
+            self.config.get(
+                "Trial Duration (s)", self._schema_default("Trial Duration (s)")
+            )
+        )
+
+        self.scale = 0.3 if debug_mode else 1.0
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 3840))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+        self.screen_w = float(screen_w_px // 3 if debug_mode else screen_w_px)
+        self.screen_h = float(screen_h_px // 2 if debug_mode else screen_h_px)
+
+        half_w = self.screen_w / 2.0
+        half_h = self.screen_h / 2.0
+        self._x = np.random.uniform(-half_w, half_w, self.density).astype(np.float64)
+        self._y = np.random.uniform(-half_h, half_h, self.density).astype(np.float64)
+
+        coh_count = int(self.density * self.coherence)
+        base_angle = 180.0 if self.direction == "Left" else 0.0
+        angles = np.empty(self.density, dtype=np.float64)
+        angles[:coh_count] = base_angle
+        angles[coh_count:] = np.random.uniform(0.0, 360.0, self.density - coh_count)
+        self._dx = np.cos(np.radians(angles))
+        self._dy = np.sin(np.radians(angles))
+
+    @classmethod
+    def get_available_patterns(cls) -> List[str]:
+        return list(cls.EXPERIMENT_PATTERNS.keys())
+
+    @classmethod
+    def get_sync_channels(cls) -> List[str]:
+        return ["Trial Active", "Phase Flip"]
+
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "Speed (deg/s)": {
+                "type": "float",
+                "default": 30.0,
+                "min": 0.1,
+                "max": 1000.0,
+                "label": "Speed (deg/s)",
+            },
+            "Density": {
+                "type": "int",
+                "default": 200,
+                "min": 1,
+                "max": 50000,
+                "label": "Density",
+            },
+            "Coherence": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.0,
+                "max": 1.0,
+                "label": "Coherence (0–1)",
+            },
+            "Direction": {
+                "type": "choice",
+                "default": "Left",
+                "choices": ["Left", "Right"],
+                "label": "Direction",
+            },
+            "Trial Duration (s)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.1,
+                "max": 600.0,
+                "label": "Trial Duration (s)",
+            },
+            "Number of Trials": {
+                "type": "int",
+                "default": 10,
+                "min": 1,
+                "max": 9999,
+                "label": "Number of Trials",
+            },
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual"],
+                "label": "Execution Mode",
+            },
+            "Random Seed": {
+                "type": "string",
+                "default": "Auto",
+                "label": "Random Seed",
+            },
+        }
+
+    def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
+        n = int(
+            self.config.get(
+                "Number of Trials", self._schema_default("Number of Trials")
+            )
+        )
+        return [
+            {
+                "type": "optic_flow",
+                "trial_idx": i,
+                "speed": self.speed,
+                "density": self.density,
+                "coherence": self.coherence,
+                "direction": self.direction,
+                "trial_duration": self.trial_duration,
+            }
+            for i in range(n)
+        ]
+
+    def prepare_trial(self, trial_context: dict) -> str:
+        density = trial_context["density"]
+        coherence = trial_context["coherence"]
+        direction = trial_context["direction"]
+
+        half_w = self.screen_w / 2.0
+        half_h = self.screen_h / 2.0
+        self._x = np.random.uniform(-half_w, half_w, density).astype(np.float64)
+        self._y = np.random.uniform(-half_h, half_h, density).astype(np.float64)
+
+        coh_count = int(density * coherence)
+        base_angle = 180.0 if direction == "Left" else 0.0
+        angles = np.empty(density, dtype=np.float64)
+        angles[:coh_count] = base_angle
+        angles[coh_count:] = np.random.uniform(0.0, 360.0, density - coh_count)
+        self._dx = np.cos(np.radians(angles))
+        self._dy = np.sin(np.radians(angles))
+
+        self._last_time = 0.0
+
+        return ""
+
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+        bg = {
+            "id": "_bg",
+            "type": "rect",
+            "width": self.screen_w,
+            "height": self.screen_h,
+            "pos": (0, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+        tel = {
+            "phase": "Idle",
+            "hw_cmd": None,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                "speed": 0.0,
+                "density": self.density,
+                "n_dots": self.density,
+                **hw_telemetry,
+            },
+            "ui_twin": None,
+        }
+        return [bg], tel, [0, 0]
+
+    def process_frame(
+        self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
+        speed = trial_context["speed"]
+        density = trial_context["density"]
+
+        is_done = elapsed_time >= trial_context["trial_duration"]
+
+        dt = elapsed_time - self._last_time
+        if dt <= 0:
+            dt = 1.0 / 60.0
+        self._last_time = elapsed_time
+
+        step = speed * self.scale * (dt * 60.0)
+        self._x += self._dx * step
+        self._y += self._dy * step
+
+        half_w = self.screen_w / 2.0
+        half_h = self.screen_h / 2.0
+        self._x = np.where(self._x > half_w, self._x - self.screen_w, self._x)
+        self._x = np.where(self._x < -half_w, self._x + self.screen_w, self._x)
+        self._y = np.where(self._y > half_h, self._y - self.screen_h, self._y)
+        self._y = np.where(self._y < -half_h, self._y + self.screen_h, self._y)
+
+        bg = {
+            "id": "_bg",
+            "type": "rect",
+            "width": self.screen_w,
+            "height": self.screen_h,
+            "pos": (0, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+        cmds = [
+            bg,
+            {
+                "type": "element_array",
+                "n_elements": density,
+                "xys": np.column_stack([self._x, self._y]),
+                "sizes": np.full((density, 2), 15.0),
+                "colors": np.full((density, 3), 1.0),
+                "opacities": np.ones(density),
+            },
+        ]
+
+        phase_sq = 1 if (math.floor(elapsed_time * 10) % 2 == 0) else 0
+        tel = {
+            "phase": "OpticFlow",
+            "hw_cmd": None,
+            "ui_color": "lime",
+            "ui_metrics": {
+                "speed": speed,
+                "density": density,
+                "n_dots": density,
+                **hw_telemetry,
+            },
+            "ui_twin": None,
+        }
+        return is_done, cmds, tel, [1, phase_sq]
+
+
+# ---------------------------------------------------------------------------
+# Movement Trace Paradigm (Lissajous trajectory)
+# ---------------------------------------------------------------------------
+
+
+class MovementTraceParadigm(BaseParadigm):
+    EXPERIMENT_PATTERNS = {
+        "Movement Trace": "movement_trace",
+    }
+
+    def __init__(self, debug_mode: bool = False, config: dict = None):
+        self.config = config or {}
+        self.freq_x = float(self.config.get("Freq X", self._schema_default("Freq X")))
+        self.freq_y = float(self.config.get("Freq Y", self._schema_default("Freq Y")))
+        self.amp_x = float(
+            self.config.get("Amplitude X", self._schema_default("Amplitude X"))
+        )
+        self.amp_y = float(
+            self.config.get("Amplitude Y", self._schema_default("Amplitude Y"))
+        )
+        self.speed = float(self.config.get("Speed", self._schema_default("Speed")))
+        self.n_trail = int(
+            self.config.get("Trail Points", self._schema_default("Trail Points"))
+        )
+        self.trial_duration = float(
+            self.config.get(
+                "Trial Duration (s)", self._schema_default("Trial Duration (s)")
+            )
+        )
+
+        self.scale = 0.3 if debug_mode else 1.0
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 3840))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+        self.screen_w = float(screen_w_px // 3 if debug_mode else screen_w_px)
+        self.screen_h = float(screen_h_px // 2 if debug_mode else screen_h_px)
+
+        self._t_accum = 0.0
+        self._trail_x = np.zeros(self.n_trail, dtype=np.float64)
+        self._trail_y = np.zeros(self.n_trail, dtype=np.float64)
+        self._trail_colors = np.zeros((self.n_trail, 3), dtype=np.float64)
+
+    @classmethod
+    def get_available_patterns(cls) -> List[str]:
+        return list(cls.EXPERIMENT_PATTERNS.keys())
+
+    @classmethod
+    def get_sync_channels(cls) -> List[str]:
+        return ["Quad Right", "Quad Upper", "Node Trigger", "Reserved"]
+
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "Freq X": {
+                "type": "float",
+                "default": 3.0,
+                "min": 0.1,
+                "max": 100.0,
+                "label": "Frequency X",
+            },
+            "Freq Y": {
+                "type": "float",
+                "default": 2.0,
+                "min": 0.1,
+                "max": 100.0,
+                "label": "Frequency Y",
+            },
+            "Amplitude X": {
+                "type": "float",
+                "default": 400.0,
+                "min": 1.0,
+                "max": 2000.0,
+                "label": "Amplitude X (px)",
+            },
+            "Amplitude Y": {
+                "type": "float",
+                "default": 300.0,
+                "min": 1.0,
+                "max": 2000.0,
+                "label": "Amplitude Y (px)",
+            },
+            "Speed": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.01,
+                "max": 100.0,
+                "label": "Speed multiplier",
+            },
+            "Trail Points": {
+                "type": "int",
+                "default": 64,
+                "min": 1,
+                "max": 10000,
+                "label": "Trail Points",
+            },
+            "Trial Duration (s)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.1,
+                "max": 600.0,
+                "label": "Trial Duration (s)",
+            },
+            "Number of Trials": {
+                "type": "int",
+                "default": 5,
+                "min": 1,
+                "max": 9999,
+                "label": "Number of Trials",
+            },
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual"],
+                "label": "Execution Mode",
+            },
+        }
+
+    def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
+        n = int(
+            self.config.get(
+                "Number of Trials", self._schema_default("Number of Trials")
+            )
+        )
+        return [{"type": "movement_trace", "trial_idx": i} for i in range(n)]
+
+    def prepare_trial(self, trial_context: dict) -> str:
+        self._t_accum = 0.0
+        self._last_sin = 0.0
+        self._trail_x = np.zeros(self.n_trail, dtype=np.float64)
+        self._trail_y = np.zeros(self.n_trail, dtype=np.float64)
+        self._trail_colors = np.zeros((self.n_trail, 3), dtype=np.float64)
+        return ""
+
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+        bg = {
+            "id": "_bg",
+            "type": "rect",
+            "width": self.screen_w,
+            "height": self.screen_h,
+            "pos": (0, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+        tel = {
+            "phase": "Idle",
+            "hw_cmd": None,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                "n_trail": self.n_trail,
+                "pos_x": 0.0,
+                "pos_y": 0.0,
+                **hw_telemetry,
+            },
+            "ui_twin": None,
+        }
+        return [bg], tel, [0, 0, 0, 0]
+
+    def process_frame(
+        self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
+        self._t_accum = elapsed_time * self.speed
+        t = self._t_accum
+
+        x = self.amp_x * self.scale * math.sin(self.freq_x * t)
+        y = self.amp_y * self.scale * math.sin(self.freq_y * t)
+
+        self._trail_x = np.roll(self._trail_x, 1)
+        self._trail_y = np.roll(self._trail_y, 1)
+        self._trail_colors = np.roll(self._trail_colors, 1, axis=0)
+        self._trail_x[0] = x
+        self._trail_y[0] = y
+        self._trail_colors[0] = [1.0, 1.0, 1.0]
+
+        t_vals = np.linspace(1.0, 0.0, self.n_trail)
+        self._trail_colors[:, 0] = 2.0 * t_vals - 1.0
+        self._trail_colors[:, 1] = 2.0 * t_vals - 1.0
+        self._trail_colors[:, 2] = 2.0 * t_vals - 1.0
+
+        bg = {
+            "id": "_bg",
+            "type": "rect",
+            "width": self.screen_w,
+            "height": self.screen_h,
+            "pos": (0, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+        cmds = [
+            bg,
+            {
+                "type": "element_array",
+                "n_elements": self.n_trail,
+                "xys": np.column_stack([self._trail_x, self._trail_y]),
+                "sizes": np.linspace(12.0, 2.0, self.n_trail),
+                "colors": self._trail_colors,
+                "opacities": np.ones(self.n_trail),
+            },
+        ]
+
+        is_done = elapsed_time >= self.trial_duration
+
+        q_right = 1 if x >= 0 else 0
+        q_upper = 1 if y >= 0 else 0
+        curr_sin = math.sin(self.freq_x * t)
+        node_trigger = 1 if (self._last_sin * curr_sin <= 0 and t > 0) else 0
+        self._last_sin = curr_sin
+
+        tel = {
+            "phase": "MovementTrace",
+            "hw_cmd": None,
+            "ui_color": "lime",
+            "ui_metrics": {
+                "n_trail": self.n_trail,
+                "pos_x": round(x, 1),
+                "pos_y": round(y, 1),
+                **hw_telemetry,
+            },
+            "ui_twin": None,
+        }
+        return is_done, cmds, tel, [q_right, q_upper, node_trigger, 0]
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+PARADIGM_REGISTRY: Dict[str, type] = {
     "Looming": LoomingParadigm,
     "ClassicLooming": ClassicLoomingParadigm,
+    "OpticFlow": OpticFlowParadigm,
+    "MovementTrace": MovementTraceParadigm,
 }
 
 

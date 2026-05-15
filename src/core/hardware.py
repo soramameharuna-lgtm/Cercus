@@ -1,7 +1,7 @@
 import queue
 import threading
 import time
-from typing import List, Tuple, Callable
+from typing import List, Tuple, Callable, Union
 
 try:
     import serial
@@ -13,50 +13,59 @@ except ImportError:
 
 
 class KinematicsParser:
-    @staticmethod
-    def get_headers() -> list:
-        return [
-            "sys_time",
-            "ard_time",
-            "dx",
-            "dy",
-            "dz",
-            "stim_state",
-            "global_trial_id",
-        ]
+    _DEFAULT_SCHEMA = [
+        (0, 0, "ard_time"),
+        (1, 0, "dx"),
+        (2, 0, "dy"),
+        (3, 0, "dz"),
+        (4, 0, "stim_state"),
+    ]
+
+    def __init__(self, telemetry_schema: list = None, calib_factors: dict = None):
+        self._field_defs = telemetry_schema or self._DEFAULT_SCHEMA
+        self._calib_factors = calib_factors or {"dx": 1.0, "dy": 1.0, "dz": 1.0}
+
+    def get_headers(self) -> list:
+        return ["sys_time"] + [h for _, _, h in self._field_defs] + ["global_trial_id"]
 
     @staticmethod
-    def parse(sys_time: float, raw: str, g_id: int) -> list:
-        parts = raw.split(",")
-        if len(parts) >= 5:
-            try:
-                return [
-                    f"{sys_time:.6f}",
-                    int(parts[0]),
-                    int(parts[1]),
-                    int(parts[2]),
-                    int(parts[3]),
-                    int(parts[4]),
-                    g_id,
-                ]
-            except (ValueError, TypeError, IndexError):
-                pass
-        return None
+    def _safe_int(val: str, default: int = 0) -> int:
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return default
 
-    @staticmethod
-    def get_telemetry(raw: str) -> dict:
+    def _parse_fields(self, raw: str) -> list:
         parts = raw.split(",")
-        if len(parts) >= 5:
-            try:
-                return {
-                    "dx": int(parts[1]),
-                    "dy": int(parts[2]),
-                    "dz": int(parts[3]),
-                    "stim_state": int(parts[4]),
-                }
-            except (ValueError, TypeError, IndexError):
-                pass
-        return {"dx": "err", "dy": "err", "dz": "err", "stim_state": "err"}
+        return [self._safe_int(parts[i], d) if i < len(parts) else d for i, d, _ in self._field_defs]
+
+    def _apply_calibration(self, fields: list) -> list:
+        out = list(fields)
+        for idx, (_, _, key) in enumerate(self._field_defs):
+            factor = self._calib_factors.get(key)
+            if factor is not None and factor != 1.0:
+                val = out[idx]
+                if isinstance(val, (int, float)) and val != 0:
+                    out[idx] = float(val) * factor
+        return out
+
+    def set_calib_factors(self, factors: dict):
+        self._calib_factors.update(factors)
+
+    def parse(self, sys_time: float, raw: str, g_id: int) -> list:
+        raw = raw.strip()
+        if not raw:
+            return None
+        fields = self._apply_calibration(self._parse_fields(raw))
+        return [f"{sys_time:.6f}"] + fields + [g_id]
+
+    def get_telemetry(self, raw: str) -> dict:
+        raw = raw.strip()
+        if not raw:
+            return {h: "err" for _, _, h in self._field_defs}
+        fields = self._apply_calibration(self._parse_fields(raw))
+        keys = [h for _, _, h in self._field_defs]
+        return dict(zip(keys, fields))
 
 
 class SerialDaemon:
@@ -65,25 +74,33 @@ class SerialDaemon:
         self.baudrate = baudrate
         self.timeout = timeout
         self.data_queue = queue.Queue(maxsize=8192)
+        self.tx_queue = queue.Queue(maxsize=128)
         self._serial = None
         self._running = False
-        self._time_func = time.time
+        self._time_func: Callable[[], float] = None
 
-    def start(self, time_func: Callable[[], float] = None):
-        if time_func:
-            self._time_func = time_func
+    def start(self, time_func: Callable[[], float]):
+        if time_func is None:
+            raise ValueError("time_func is required — must be bound to core.Clock().getTime")
+        self._time_func = time_func
         if not HAS_SERIAL:
             return
 
-        try:
-            self._serial = serial.Serial(
-                port=self.port, baudrate=self.baudrate, timeout=self.timeout
-            )
-            self._serial.reset_input_buffer()
-            self._running = True
-            threading.Thread(target=self._reader_loop, daemon=True).start()
-        except Exception:
-            self._serial = None
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                self._serial = serial.Serial(
+                    port=self.port, baudrate=self.baudrate, timeout=self.timeout
+                )
+                self._serial.reset_input_buffer()
+                self._running = True
+                threading.Thread(target=self._reader_loop, daemon=True).start()
+                threading.Thread(target=self._writer_loop, daemon=True).start()
+                return
+            except Exception:
+                self._serial = None
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
 
     def _reader_loop(self):
         error_count = 0
@@ -96,9 +113,9 @@ class SerialDaemon:
                     time.sleep(0.001)
                     continue
 
-                # 时间戳采样前置，绑定硬件缓冲就绪时刻
-                t_sys = self._time_func()
                 raw = self._serial.readline()
+                # Timestamp sampled immediately after read completes
+                t_sys = self._time_func()
 
                 clean_raw = raw.decode("ascii", errors="ignore").strip()
                 if clean_raw:
@@ -116,9 +133,26 @@ class SerialDaemon:
                     self._running = False
                     break
 
-    def send_command(self, cmd_str: str):
-        if self._serial and getattr(self._serial, "is_open", False):
-            self._serial.write(cmd_str.encode("ascii"))
+    def _writer_loop(self):
+        while self._running:
+            try:
+                cmd = self.tx_queue.get(timeout=0.01)
+            except queue.Empty:
+                continue
+            try:
+                if self._serial and getattr(self._serial, "is_open", False):
+                    if isinstance(cmd, bytes):
+                        self._serial.write(cmd)
+                    else:
+                        self._serial.write(cmd.encode("ascii"))
+            except Exception:
+                pass
+
+    def send_command(self, cmd: Union[str, bytes]):
+        try:
+            self.tx_queue.put_nowait(cmd)
+        except queue.Full:
+            pass
 
     def drain_queue(self) -> List[Tuple[float, str]]:
         items = []
@@ -132,6 +166,12 @@ class SerialDaemon:
     def stop(self):
         self._running = False
         time.sleep(self.timeout + 0.05)
+        # Drain pending TX commands
+        while not self.tx_queue.empty():
+            try:
+                self.tx_queue.get_nowait()
+            except queue.Empty:
+                break
         if self._serial and getattr(self._serial, "is_open", False):
             self._serial.close()
 
@@ -140,10 +180,14 @@ class MockSerialDaemon:
     def __init__(self):
         self.data_queue = queue.Queue(maxsize=8192)
         self._running = False
-        self._time_func = time.time
+        self._time_func: Callable[[], float] = None
+        self._mock_generator = None
 
-    def start(self, time_func: Callable[[], float] = None):
-        self._time_func = time_func or time.time
+    def start(self, time_func: Callable[[], float], mock_generator: Callable[[int], str] = None):
+        if time_func is None:
+            raise ValueError("time_func is required — must be bound to core.Clock().getTime")
+        self._time_func = time_func
+        self._mock_generator = mock_generator
         self._running = True
         threading.Thread(target=self._mock_loop, daemon=True).start()
 
@@ -152,13 +196,17 @@ class MockSerialDaemon:
         while self._running:
             t_sys = self._time_func()
             t_ard += 10
+            if self._mock_generator:
+                raw = self._mock_generator(t_ard)
+            else:
+                raw = f"{t_ard},0,0,0,0"
             try:
-                self.data_queue.put_nowait((t_sys, f"{t_ard},0,0,0,0"))
+                self.data_queue.put_nowait((t_sys, raw))
             except queue.Full:
                 pass
             time.sleep(0.01)
 
-    def send_command(self, cmd_str: str):
+    def send_command(self, cmd: Union[str, bytes]):
         pass
 
     def drain_queue(self) -> List[Tuple]:

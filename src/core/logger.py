@@ -3,6 +3,19 @@ import json
 import os
 from typing import List
 
+import numpy as np
+
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
 
 class GroundTruthLogger:
     EVENT_COLUMNS = [
@@ -24,6 +37,7 @@ class GroundTruthLogger:
         self._event_writer = None
         self._kinematics_file = None
         self._kinematics_writer = None
+        self._kin_buffer: List[list] = []
 
     def _load_cache(self) -> int:
         cache_path = os.path.join(self.out, ".trial_cache.txt")
@@ -61,6 +75,7 @@ class GroundTruthLogger:
         return self._event_writer is not None and self._kinematics_writer is not None
 
     def close(self):
+        self.flush_kinematics()
         if self._event_file:
             self._event_file.close()
             self._event_file, self._event_writer = None, None
@@ -83,14 +98,23 @@ class GroundTruthLogger:
                 self.session_num,
                 self.trial_in_session,
                 self.global_trial_id,
-                json.dumps(details) if details else "",
+                json.dumps(details, cls=NumpyEncoder) if details else "",
             ]
         )
 
     def log_kinematics_batch(self, items: List[list]):
         if not self._kinematics_writer:
             return
-        self._kinematics_writer.writerows(items)
+        self._kin_buffer.extend(items)
+
+    def flush_kinematics(self):
+        if self._kin_buffer and self._kinematics_writer:
+            self._kinematics_writer.writerows(self._kin_buffer)
+            self._kin_buffer.clear()
+            self._kinematics_file.flush()
+
+    def kin_buffer_size(self) -> int:
+        return len(self._kin_buffer)
 
     def flush(self):
         if self._event_file:
