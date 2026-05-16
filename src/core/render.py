@@ -134,16 +134,22 @@ class ScreenEnvironment:
 
     def render(self, sync_states: list[int]):
         self._frame_counter += 1
-        odd = self._frame_counter % 2 == 1
-        trial_active = sync_states[0] if len(sync_states) > 0 else 0
-
         off = [-1, -1, -1]
         on = [1, 1, 1]
 
-        outer_color = on if (trial_active and odd) else off
-        inner_color = on if trial_active else off
+        if len(sync_states) == 4:
+            # Direct 1:1 mapping for advanced 4-channel paradigms
+            assignments = [on if s else off for s in sync_states]
+        else:
+            # Legacy fallback for 1 or 2 channel paradigms (e.g., Looming, OpticFlow)
+            odd = self._frame_counter % 2 == 1
+            trial_active = sync_states[0] if len(sync_states) > 0 else 0
 
-        assignments = [outer_color, inner_color, inner_color, outer_color]
+            outer_color = on if (trial_active and odd) else off
+            inner_color = on if trial_active else off
+
+            assignments = [outer_color, inner_color, inner_color, outer_color]
+
         for sb, color in zip(self._sync_blocks, assignments):
             sb.fillColor = color
             sb.lineColor = color

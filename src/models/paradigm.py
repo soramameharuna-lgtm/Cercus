@@ -325,8 +325,9 @@ class LoomingParadigm(BaseParadigm):
             if elapsed_time >= t_col + 1.0:
                 is_done = True
             else:
-                if elapsed_time < t_col - 1e-5:
-                    theta = math.degrees(2 * math.atan(lv_s / (t_col - elapsed_time)))
+                delta = max(t_col - elapsed_time, 0.001)
+                if delta > 0.001:
+                    theta = math.degrees(2 * math.atan(lv_s / delta))
                 else:
                     theta = self.max_deg
                 theta = min(theta, self.max_deg)
@@ -462,12 +463,6 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "min": 1,
                 "max": 9999,
                 "label": "Number of Trials",
-            },
-            "Direction Mode": {
-                "type": "choice",
-                "default": "Random L/R",
-                "choices": ["Random L/R", "Always Left", "Always Right"],
-                "label": "Direction Mode",
             },
             "Execution Mode": {
                 "type": "choice",
@@ -612,8 +607,9 @@ class ClassicLoomingParadigm(BaseParadigm):
             is_done = True
             theta = final_deg
         else:
-            if elapsed_time < t_col - 1e-5:
-                theta = math.degrees(2 * math.atan(lv_s / (t_col - elapsed_time)))
+            delta = max(t_col - elapsed_time, 0.001)
+            if delta > 0.001:
+                theta = math.degrees(2 * math.atan(lv_s / delta))
             else:
                 theta = final_deg
             theta = min(theta, final_deg)
@@ -795,6 +791,12 @@ class OpticFlowParadigm(BaseParadigm):
         self._last_time = 0.0
         self._coh_count = int(density * coherence)
 
+        # Pre-allocate per-frame rendering arrays (avoids GC jitter)
+        self._xys = np.empty((density, 2), dtype=np.float64)
+        self._sizes = np.full((density, 2), 15.0, dtype=np.float64)
+        self._colors = np.full((density, 3), 1.0, dtype=np.float64)
+        self._opacities = np.ones(density, dtype=np.float64)
+
         return ""
 
     def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
@@ -834,7 +836,7 @@ class OpticFlowParadigm(BaseParadigm):
             dt = 1.0 / 60.0
         self._last_time = elapsed_time
 
-        step = self._deg_to_pix(speed) * (dt * 60.0)
+        step = self._deg_to_pix(speed) * dt
         self._x += self._dx * step
         self._y += self._dy * step
 
@@ -853,18 +855,17 @@ class OpticFlowParadigm(BaseParadigm):
             self._dx[annihilated] = np.cos(np.radians(new_angles))
             self._dy[annihilated] = np.sin(np.radians(new_angles))
 
-        # Wrap-around boundary check
-        wrapped = np.zeros(density, dtype=bool)
+        # Wrap-around boundary check (in-place)
         mask_right = self._x > half_w
         mask_left = self._x < -half_w
         mask_top = self._y > half_h
         mask_bottom = self._y < -half_h
-        wrapped |= mask_right | mask_left | mask_top | mask_bottom
+        wrapped = mask_right | mask_left | mask_top | mask_bottom
 
-        self._x = np.where(mask_right, self._x - self.screen_w, self._x)
-        self._x = np.where(mask_left, self._x + self.screen_w, self._x)
-        self._y = np.where(mask_top, self._y - self.screen_h, self._y)
-        self._y = np.where(mask_bottom, self._y + self.screen_h, self._y)
+        self._x[mask_right] -= self.screen_w
+        self._x[mask_left] += self.screen_w
+        self._y[mask_top] -= self.screen_h
+        self._y[mask_bottom] += self.screen_h
 
         # Re-randomize direction for wrapped noise particles to break visual streaks
         wrapped_noise = wrapped & noise
@@ -882,15 +883,17 @@ class OpticFlowParadigm(BaseParadigm):
             "fillColor": [0, 0, 0],
             "lineColor": [0, 0, 0],
         }
+        self._xys[:, 0] = self._x
+        self._xys[:, 1] = self._y
         cmds = [
             bg,
             {
                 "type": "element_array",
                 "n_elements": density,
-                "xys": np.column_stack([self._x, self._y]),
-                "sizes": np.full((density, 2), 15.0),
-                "colors": np.full((density, 3), 1.0),
-                "opacities": np.ones(density),
+                "xys": self._xys,
+                "sizes": self._sizes,
+                "colors": self._colors,
+                "opacities": self._opacities,
             },
         ]
 
@@ -1041,6 +1044,16 @@ class MovementTraceParadigm(BaseParadigm):
         self._trail_x = np.zeros(self.n_trail, dtype=np.float64)
         self._trail_y = np.zeros(self.n_trail, dtype=np.float64)
         self._trail_colors = np.zeros((self.n_trail, 3), dtype=np.float64)
+
+        # Pre-allocate per-frame rendering arrays (avoids GC jitter)
+        self._xys = np.empty((self.n_trail, 2), dtype=np.float64)
+        trail_range = np.linspace(12.0, 2.0, self.n_trail, dtype=np.float64)
+        self._sizes = np.empty((self.n_trail, 2), dtype=np.float64)
+        self._sizes[:, 0] = trail_range
+        self._sizes[:, 1] = trail_range
+        self._opacities = np.ones(self.n_trail, dtype=np.float64)
+        self._trail_linspace = np.linspace(1.0, 0.0, self.n_trail, dtype=np.float64)
+
         return ""
 
     def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
@@ -1076,17 +1089,17 @@ class MovementTraceParadigm(BaseParadigm):
         x = self.amp_x * self.scale * math.sin(self.freq_x * t)
         y = self.amp_y * self.scale * math.sin(self.freq_y * t)
 
-        self._trail_x = np.roll(self._trail_x, 1)
-        self._trail_y = np.roll(self._trail_y, 1)
-        self._trail_colors = np.roll(self._trail_colors, 1, axis=0)
+        # In-place shift (avoids np.roll allocating new arrays)
+        self._trail_x[1:] = self._trail_x[:-1]
+        self._trail_y[1:] = self._trail_y[:-1]
+        self._trail_colors[1:] = self._trail_colors[:-1]
         self._trail_x[0] = x
         self._trail_y[0] = y
         self._trail_colors[0] = [1.0, 1.0, 1.0]
 
-        t_vals = np.linspace(1.0, 0.0, self.n_trail)
-        self._trail_colors[:, 0] = 2.0 * t_vals - 1.0
-        self._trail_colors[:, 1] = 2.0 * t_vals - 1.0
-        self._trail_colors[:, 2] = 2.0 * t_vals - 1.0
+        self._trail_colors[:, 0] = 2.0 * self._trail_linspace - 1.0
+        self._trail_colors[:, 1] = 2.0 * self._trail_linspace - 1.0
+        self._trail_colors[:, 2] = 2.0 * self._trail_linspace - 1.0
 
         bg = {
             "id": "_bg",
@@ -1097,15 +1110,17 @@ class MovementTraceParadigm(BaseParadigm):
             "fillColor": [0, 0, 0],
             "lineColor": [0, 0, 0],
         }
+        self._xys[:, 0] = self._trail_x
+        self._xys[:, 1] = self._trail_y
         cmds = [
             bg,
             {
                 "type": "element_array",
                 "n_elements": self.n_trail,
-                "xys": np.column_stack([self._trail_x, self._trail_y])[::-1],
-                "sizes": np.column_stack([np.linspace(12.0, 2.0, self.n_trail)] * 2)[::-1],
+                "xys": self._xys[::-1],
+                "sizes": self._sizes[::-1],
                 "colors": self._trail_colors[::-1],
-                "opacities": np.ones(self.n_trail)[::-1],
+                "opacities": self._opacities[::-1],
             },
         ]
 

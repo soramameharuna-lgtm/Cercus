@@ -21,9 +21,12 @@ class KinematicsParser:
         (4, 0, "stim_state"),
     ]
 
+    _IDENTITY_MATRIX = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
     def __init__(self, telemetry_schema: list = None, calib_factors: dict = None):
         self._field_defs = telemetry_schema or self._DEFAULT_SCHEMA
         self._calib_factors = calib_factors or {"dx": 1.0, "dy": 1.0, "dz": 1.0}
+        self._calib_matrix = [row[:] for row in self._IDENTITY_MATRIX]
 
     def get_headers(self) -> list:
         return ["sys_time"] + [h for _, _, h in self._field_defs] + ["global_trial_id"]
@@ -41,7 +44,23 @@ class KinematicsParser:
 
     def _apply_calibration(self, fields: list) -> list:
         out = list(fields)
+        # Locate dx, dy, dz indices in the field definitions
+        idx_map = {}
         for idx, (_, _, key) in enumerate(self._field_defs):
+            if key in ("dx", "dy", "dz"):
+                idx_map[key] = idx
+        if all(k in idx_map for k in ("dx", "dy", "dz")):
+            raw_dx = float(out[idx_map["dx"]])
+            raw_dy = float(out[idx_map["dy"]])
+            raw_dz = float(out[idx_map["dz"]])
+            m = self._calib_matrix
+            out[idx_map["dx"]] = raw_dx * m[0][0] + raw_dy * m[0][1] + raw_dz * m[0][2]
+            out[idx_map["dy"]] = raw_dx * m[1][0] + raw_dy * m[1][1] + raw_dz * m[1][2]
+            out[idx_map["dz"]] = raw_dx * m[2][0] + raw_dy * m[2][1] + raw_dz * m[2][2]
+        # Apply legacy scalar factors for non-dx/dy/dz fields
+        for idx, (_, _, key) in enumerate(self._field_defs):
+            if key in ("dx", "dy", "dz"):
+                continue
             factor = self._calib_factors.get(key)
             if factor is not None and factor != 1.0:
                 val = out[idx]
@@ -51,6 +70,15 @@ class KinematicsParser:
 
     def set_calib_factors(self, factors: dict):
         self._calib_factors.update(factors)
+
+    def set_calib_matrix(self, matrix: list):
+        """Set the 3x3 decoupling calibration matrix.
+
+        Args:
+            matrix: 3x3 list of lists. Each row transforms one output axis:
+                    [real_dx, real_dy, real_dz] = [raw_dx, raw_dy, raw_dz] dot matrix
+        """
+        self._calib_matrix = [row[:] for row in matrix]
 
     def parse(self, sys_time: float, raw: str, g_id: int) -> list:
         raw = raw.strip()
@@ -62,7 +90,7 @@ class KinematicsParser:
     def get_telemetry(self, raw: str) -> dict:
         raw = raw.strip()
         if not raw:
-            return {h: "err" for _, _, h in self._field_defs}
+            return {h: 0.0 for _, _, h in self._field_defs}
         fields = self._apply_calibration(self._parse_fields(raw))
         keys = [h for _, _, h in self._field_defs]
         return dict(zip(keys, fields))
@@ -77,12 +105,14 @@ class SerialDaemon:
         self.tx_queue = queue.Queue(maxsize=128)
         self._serial = None
         self._running = False
-        self._time_func: Callable[[], float] = None
+        self._clock_offset: float = 0.0
+        self._rx_buf: str = ""
 
     def start(self, time_func: Callable[[], float]):
         if time_func is None:
             raise ValueError("time_func is required — must be bound to core.Clock().getTime")
-        self._time_func = time_func
+        # Compute clock offset once so threads use perf_counter without GIL contention
+        self._clock_offset = time_func() - time.perf_counter()
         if not HAS_SERIAL:
             return
 
@@ -90,10 +120,12 @@ class SerialDaemon:
         for attempt in range(max_retries):
             try:
                 self._serial = serial.Serial(
-                    port=self.port, baudrate=self.baudrate, timeout=self.timeout
+                    port=self.port, baudrate=self.baudrate,
+                    timeout=self.timeout, write_timeout=0.1,
                 )
                 self._serial.reset_input_buffer()
                 self._running = True
+                self._rx_buf = ""
                 threading.Thread(target=self._reader_loop, daemon=True).start()
                 threading.Thread(target=self._writer_loop, daemon=True).start()
                 return
@@ -104,26 +136,37 @@ class SerialDaemon:
 
     def _reader_loop(self):
         error_count = 0
+        rx_buf = self._rx_buf
         while self._running:
             try:
                 if not self._serial or not getattr(self._serial, "is_open", False):
                     break
 
-                if self._serial.in_waiting == 0:
+                n = self._serial.in_waiting
+                if n == 0:
                     time.sleep(0.001)
                     continue
 
-                # Sample timestamp at earliest moment data is known present,
-                # before the (potentially blocking) readline call.
-                t_sys = self._time_func()
-                raw = self._serial.readline()
+                raw = self._serial.read(n)
+                if not raw:
+                    continue
 
-                clean_raw = raw.decode("ascii", errors="ignore").strip()
-                if clean_raw:
-                    try:
-                        self.data_queue.put_nowait((t_sys, clean_raw))
-                    except queue.Full:
-                        pass
+                t_sys = time.perf_counter() + self._clock_offset
+                rx_buf += raw.decode("ascii", errors="ignore")
+
+                # Split on newline boundaries; keep incomplete tail in buffer
+                while "\n" in rx_buf:
+                    line, rx_buf = rx_buf.split("\n", 1)
+                    line = line.strip()
+                    if line:
+                        try:
+                            self.data_queue.put_nowait((t_sys, line))
+                        except queue.Full:
+                            try:
+                                self.data_queue.get_nowait()
+                                self.data_queue.put_nowait((t_sys, line))
+                            except Exception:
+                                pass
                 error_count = 0
             except Exception:
                 if not self._running:
@@ -133,6 +176,7 @@ class SerialDaemon:
                 if error_count > 100:
                     self._running = False
                     break
+        self._rx_buf = rx_buf
 
     def _writer_loop(self):
         while self._running:
@@ -184,13 +228,13 @@ class MockSerialDaemon:
     def __init__(self):
         self.data_queue = queue.Queue(maxsize=8192)
         self._running = False
-        self._time_func: Callable[[], float] = None
+        self._clock_offset: float = 0.0
         self._mock_generator = None
 
     def start(self, time_func: Callable[[], float], mock_generator: Callable[[int], str] = None):
         if time_func is None:
             raise ValueError("time_func is required — must be bound to core.Clock().getTime")
-        self._time_func = time_func
+        self._clock_offset = time_func() - time.perf_counter()
         self._mock_generator = mock_generator
         self._running = True
         threading.Thread(target=self._mock_loop, daemon=True).start()
@@ -198,7 +242,7 @@ class MockSerialDaemon:
     def _mock_loop(self):
         t_ard = 0
         while self._running:
-            t_sys = self._time_func()
+            t_sys = time.perf_counter() + self._clock_offset
             t_ard += 10
             if self._mock_generator:
                 raw = self._mock_generator(t_ard)

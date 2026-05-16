@@ -49,8 +49,12 @@ class GenericWorker:
 
         schema = self.paradigm.get_telemetry_schema()
         self.parser = KinematicsParser(schema, calib_factors=config.get("calib_factors"))
+        matrix = config.get("calib_matrix")
+        if (isinstance(matrix, list) and len(matrix) == 3
+                and all(isinstance(r, list) and len(r) == 3 for r in matrix)):
+            self.parser.set_calib_matrix(matrix)
         self.abort_flag = False
-        self._last_tel_data = {h: "—" for _, _, h in schema}
+        self._last_tel_data = {h: 0.0 for _, _, h in schema}
         self.event = None
         self._last_telemetry_push = 0.0
         self._telemetry_interval = 0.03  # 30ms downsampling interval
@@ -58,7 +62,12 @@ class GenericWorker:
     def _push(self, frame: dict, force: bool = False):
         try:
             if force:
-                self.telemetry_queue.put(frame, timeout=2.0)
+                try:
+                    self.telemetry_queue.put(frame, timeout=0.1)
+                except queue.Full:
+                    self.abort_flag = True
+                except (BrokenPipeError, EOFError, ValueError):
+                    self.abort_flag = True
                 return
 
             now = time.monotonic()
@@ -69,7 +78,7 @@ class GenericWorker:
             self.telemetry_queue.put_nowait(frame)
         except queue.Full:
             pass
-        except (BrokenPipeError, EOFError):
+        except (BrokenPipeError, EOFError, ValueError):
             self.abort_flag = True
 
     def _sync_state(self, clear_keys: bool = True):
@@ -106,8 +115,7 @@ class GenericWorker:
                 if logger.kin_buffer_size() > 10000:
                     logger.flush_kinematics()
             tel = self.parser.get_telemetry(items[-1][1])
-            if tel.get("dx") != "err":
-                self._last_tel_data = tel
+            self._last_tel_data = tel
         return self._last_tel_data
 
     @staticmethod
@@ -222,7 +230,8 @@ class GenericWorker:
                     self._present(renderer, env, cmds, sync_states)
                     self._push(self._build_telemetry(0, 0, 0, tel))
 
-                    keys = self.event.getKeys(["space", "escape"])
+                    all_keys = self.event.getKeys()
+                    keys = [k for k in all_keys if k in ["space", "escape"]]
                     if "escape" in keys:
                         self.abort_flag = True
                         raise ExperimentAbort()
@@ -256,7 +265,7 @@ class GenericWorker:
                     if t_idx > 0:
                         iti_raw = self.config.get("ITI Range (sec)", "0-0")
                         parts = iti_raw.split("-")
-                        dur = random.uniform(float(parts[0]), float(parts[1])) if len(parts) == 2 else 0.0
+                        dur = random.uniform(float(parts[0]), float(parts[1])) if len(parts) == 2 else float(parts[0])
                         if dur <= 0:
                             pass
                         else:
@@ -299,7 +308,8 @@ class GenericWorker:
                                 )
                             )
 
-                            keys = self.event.getKeys(["space", "escape"])
+                            all_keys = self.event.getKeys()
+                            keys = [k for k in all_keys if k in ["space", "escape"]]
                             if "escape" in keys:
                                 self.abort_flag = True
                                 raise ExperimentAbort()
@@ -342,7 +352,7 @@ class GenericWorker:
                 if total_sessions == -1 or s_idx < total_sessions - 1:
                     isi_raw = self.config.get("ISI Range (sec)", "0-0")
                     isi_parts = isi_raw.split("-")
-                    isi_dur = random.uniform(float(isi_parts[0]), float(isi_parts[1])) if len(isi_parts) == 2 else 0.0
+                    isi_dur = random.uniform(float(isi_parts[0]), float(isi_parts[1])) if len(isi_parts) == 2 else float(isi_parts[0])
                     if isi_dur <= 0:
                         pass
                     else:
@@ -368,11 +378,23 @@ class GenericWorker:
         except ExperimentAbort:
             try:
                 self.telemetry_queue.put({"action": "worker_abort"}, timeout=2.0)
-            except (queue.Full, BrokenPipeError, EOFError):
+            except (queue.Full, BrokenPipeError, EOFError, ValueError):
                 pass
         except Exception as e:
             self._push({"action": "worker_error", "error": str(e)}, force=True)
         finally:
+            # Drain IPC queues to prevent zombie processes on parent crash
+            for q in (self.cmd_queue, self.telemetry_queue):
+                try:
+                    while not q.empty():
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            break
+                    q.cancel_join_thread()
+                except (OSError, ValueError, AttributeError):
+                    pass
+
             if hw_daemon:
                 hw_daemon.stop()
             if logger:
@@ -380,5 +402,3 @@ class GenericWorker:
                 logger.close()
             if renderer:
                 renderer.close()
-            if core_module:
-                core_module.quit()

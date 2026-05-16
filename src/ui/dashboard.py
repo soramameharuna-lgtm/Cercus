@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import queue
 import threading
 import multiprocessing as mp
@@ -19,17 +20,66 @@ from src.workers.stimulus_worker import worker_entry, create_ipc_queues
 from src.workers.calibration_worker import calibration_worker_entry
 
 
+# ---- Pure-Python 3x3 matrix helpers (no numpy dependency) ----
+
+def _det3(m):
+    return (
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    )
+
+
+def _inv3(m, det=None):
+    if det is None:
+        det = _det3(m)
+    inv_det = 1.0 / det
+    return [
+        [
+            (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det,
+            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det,
+            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det,
+        ],
+        [
+            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det,
+            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det,
+            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv_det,
+        ],
+        [
+            (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv_det,
+            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv_det,
+            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv_det,
+        ],
+    ]
+
+
+def _matmul3(a, b):
+    return [
+        [a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] for j in range(3)]
+        for i in range(3)
+    ]
+
+
+def _transpose3(m):
+    return [[m[j][i] for j in range(3)] for i in range(3)]
+
+
 class CalibrationPanel:
-    """Physical calibration panel — delegates process lifecycle to MasterDashboard."""
+    """Per-axis physical calibration panel with matrix decoupling."""
 
     def __init__(self, parent: ctk.CTkFrame):
-        self._active = False
-        self._has_data = False
+        self._calib_active = False
+        self._current_axis = None  # "X", "Y", "Z" while calibrating
 
         # Callbacks set by MasterDashboard
+        self._cb_start_axis = None  # called with (axis, radius, rotations)
+        self._cb_stop_axis = None  # called when user stops current axis
         self._cb_enter = None  # called when user clicks "Enter Calibration"
         self._cb_exit = None  # called when user clicks "Exit Calibration"
-        self._cb_apply = None  # called with (factors: dict) on Apply
+        self._cb_apply_matrix = None  # called with (matrix: list[list[float]])
+
+        # Per-axis results: {"X": {"target_mm": float, "raw_vector": [int,int,int]}, ...}
+        self.axis_results: Dict[str, dict] = {}
 
         self.frame = ctk.CTkFrame(parent)
         self.frame.pack(fill="x", padx=6, pady=(6, 0))
@@ -40,6 +90,30 @@ class CalibrationPanel:
             header, text="Physical Calibration", font=("Segoe UI", 13, "bold")
         ).pack(side="left")
 
+        # --- Geometry inputs ---
+        geo_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        geo_frame.pack(fill="x", padx=6, pady=(0, 4))
+        ctk.CTkLabel(geo_frame, text="Radius (mm):").pack(side="left")
+        self.radius_var = ctk.StringVar(value="100.0")
+        ctk.CTkEntry(geo_frame, textvariable=self.radius_var, width=70).pack(
+            side="left", padx=(4, 0)
+        )
+        ctk.CTkLabel(geo_frame, text="Rotations:").pack(side="left", padx=(10, 0))
+        self.rotations_var = ctk.StringVar(value="3.0")
+        ctk.CTkEntry(geo_frame, textvariable=self.rotations_var, width=50).pack(
+            side="left", padx=(4, 0)
+        )
+
+        # --- Polarity instruction ---
+        ctk.CTkLabel(
+            self.frame,
+            text="Roll sphere strictly in the\nPOSITIVE direction for each axis.",
+            text_color="orange",
+            font=("Segoe UI", 10),
+            justify="left",
+        ).pack(fill="x", padx=6, pady=(0, 4))
+
+        # --- Enter / Exit calibration ---
         self.toggle_btn = ctk.CTkButton(
             self.frame,
             text="Enter Calibration",
@@ -49,35 +123,96 @@ class CalibrationPanel:
         )
         self.toggle_btn.pack(fill="x", padx=6, pady=(0, 4))
 
-        row_dx = ctk.CTkFrame(self.frame, fg_color="transparent")
-        row_dx.pack(fill="x", padx=6, pady=2)
-        ctk.CTkLabel(row_dx, text="Raw DX:", width=70, anchor="w").pack(side="left")
-        self.lbl_dx = ctk.CTkLabel(row_dx, text="0", font=("Segoe UI", 13, "bold"))
-        self.lbl_dx.pack(side="left", padx=(4, 0))
-
-        row_dy = ctk.CTkFrame(self.frame, fg_color="transparent")
-        row_dy.pack(fill="x", padx=6, pady=2)
-        ctk.CTkLabel(row_dy, text="Raw DY:", width=70, anchor="w").pack(side="left")
-        self.lbl_dy = ctk.CTkLabel(row_dy, text="0", font=("Segoe UI", 13, "bold"))
-        self.lbl_dy.pack(side="left", padx=(4, 0))
-
-        row_ref = ctk.CTkFrame(self.frame, fg_color="transparent")
-        row_ref.pack(fill="x", padx=6, pady=2)
-        ctk.CTkLabel(row_ref, text="Ref (°):", width=70, anchor="w").pack(side="left")
-        self.ref_var = ctk.StringVar(value="360")
-        ctk.CTkEntry(row_ref, textvariable=self.ref_var, width=80).pack(
-            side="left", padx=(4, 0)
+        # --- Axis buttons ---
+        axis_row = ctk.CTkFrame(self.frame, fg_color="transparent")
+        axis_row.pack(fill="x", padx=6, pady=2)
+        self.btn_cal_x = ctk.CTkButton(
+            axis_row, text="Calibrate X", width=90,
+            fg_color="#1f6aa5", hover_color="#144870",
+            command=lambda: self._on_start_axis("X"),
+            state="disabled",
         )
+        self.btn_cal_x.pack(side="left", padx=(0, 4))
+        self.btn_cal_y = ctk.CTkButton(
+            axis_row, text="Calibrate Y", width=90,
+            fg_color="#1f6aa5", hover_color="#144870",
+            command=lambda: self._on_start_axis("Y"),
+            state="disabled",
+        )
+        self.btn_cal_y.pack(side="left", padx=(0, 4))
+        self.btn_cal_z = ctk.CTkButton(
+            axis_row, text="Calibrate Z", width=90,
+            fg_color="#1f6aa5", hover_color="#144870",
+            command=lambda: self._on_start_axis("Z"),
+            state="disabled",
+        )
+        self.btn_cal_z.pack(side="left")
 
+        # --- Stop axis button ---
+        self.stop_axis_btn = ctk.CTkButton(
+            self.frame,
+            text="Stop Axis",
+            fg_color="red", hover_color="darkred",
+            command=self._on_stop_axis,
+            state="disabled",
+        )
+        self.stop_axis_btn.pack(fill="x", padx=6, pady=(0, 4))
+
+        # --- Raw vector display ---
+        self.lbl_dx = ctk.CTkLabel(self.frame, text="Raw DX: 0", font=("Segoe UI", 12))
+        self.lbl_dx.pack(padx=6, anchor="w")
+        self.lbl_dy = ctk.CTkLabel(self.frame, text="Raw DY: 0", font=("Segoe UI", 12))
+        self.lbl_dy.pack(padx=6, anchor="w")
+        self.lbl_dz = ctk.CTkLabel(self.frame, text="Raw DZ: 0", font=("Segoe UI", 12))
+        self.lbl_dz.pack(padx=6, anchor="w")
+
+        # --- Axis result labels ---
+        self.lbl_result_x = ctk.CTkLabel(self.frame, text="X: --", font=("Segoe UI", 11))
+        self.lbl_result_x.pack(padx=6, anchor="w")
+        self.lbl_result_y = ctk.CTkLabel(self.frame, text="Y: --", font=("Segoe UI", 11))
+        self.lbl_result_y.pack(padx=6, anchor="w")
+        self.lbl_result_z = ctk.CTkLabel(self.frame, text="Z: --", font=("Segoe UI", 11))
+        self.lbl_result_z.pack(padx=6, anchor="w")
+
+        # --- Apply Matrix ---
         self.apply_btn = ctk.CTkButton(
             self.frame,
-            text="Calculate & Apply",
-            fg_color="gray30",
-            hover_color="gray40",
-            state="disabled",
+            text="Apply Matrix",
+            fg_color="green", hover_color="darkgreen",
             command=self._on_apply,
+            state="disabled",
         )
         self.apply_btn.pack(fill="x", padx=6, pady=(4, 6))
+
+        # --- Manual 3x3 Matrix Grid ---
+        ctk.CTkLabel(
+            self.frame, text="Manual Calibration Matrix",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(fill="x", padx=6, pady=(4, 2))
+
+        grid_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        grid_frame.pack(padx=6, pady=(0, 4))
+
+        self._matrix_vars: List[List[ctk.StringVar]] = []
+        for r in range(3):
+            row_vars: List[ctk.StringVar] = []
+            for c in range(3):
+                var = ctk.StringVar(value="0.0000" if r != c else "1.0000")
+                entry = ctk.CTkEntry(
+                    grid_frame, textvariable=var, width=80,
+                    font=("Segoe UI", 11),
+                )
+                entry.grid(row=r, column=c, padx=2, pady=2)
+                row_vars.append(var)
+            self._matrix_vars.append(row_vars)
+
+        self.manual_save_btn = ctk.CTkButton(
+            self.frame,
+            text="Save/Update Manual Parameters",
+            fg_color="#6b5b95", hover_color="#4a3f6b",
+            command=self._on_manual_save,
+        )
+        self.manual_save_btn.pack(fill="x", padx=6, pady=(0, 6))
 
         self.status_lbl = ctk.CTkLabel(
             self.frame, text="Idle", text_color="gray", font=("Segoe UI", 11)
@@ -86,57 +221,115 @@ class CalibrationPanel:
 
     # ---- public API for MasterDashboard ----
 
-    def set_callbacks(self, enter: callable, exit_: callable, apply: callable):
+    def set_callbacks(self, enter=None, exit_=None, start_axis=None,
+                      stop_axis=None, apply_matrix=None):
         self._cb_enter = enter
         self._cb_exit = exit_
-        self._cb_apply = apply
+        self._cb_start_axis = start_axis
+        self._cb_stop_axis = stop_axis
+        self._cb_apply_matrix = apply_matrix
 
     def set_enabled(self, enabled: bool):
-        self.toggle_btn.configure(state="normal" if enabled else "disabled")
+        state = "normal" if enabled else "disabled"
+        self.toggle_btn.configure(state=state)
+        self._update_axis_button_states()
 
     def handle_telemetry(self, data: dict):
-        self.lbl_dx.configure(text=str(data.get("raw_dx", 0)))
-        self.lbl_dy.configure(text=str(data.get("raw_dy", 0)))
+        self.lbl_dx.configure(text=f"Raw DX: {data.get('raw_dx', 0)}")
+        self.lbl_dy.configure(text=f"Raw DY: {data.get('raw_dy', 0)}")
+        self.lbl_dz.configure(text=f"Raw DZ: {data.get('raw_dz', 0)}")
 
-    def on_calib_stopped(self):
+    def handle_axis_done(self, data: dict):
+        """Process an axis_calib_done result from the worker."""
+        axis = data.get("axis")
+        if axis and axis in ("X", "Y", "Z"):
+            self.axis_results[axis] = {
+                "target_mm": data.get("target_mm", 0.0),
+                "raw_vector": data.get("raw_vector", [0, 0, 0]),
+            }
+            rv = data["raw_vector"]
+            lbl = getattr(self, f"lbl_result_{axis.lower()}")
+            lbl.configure(
+                text=f"{axis}: target={data['target_mm']:.1f}mm  "
+                     f"raw=[{rv[0]}, {rv[1]}, {rv[2]}]",
+                text_color="lime",
+            )
+            self._current_axis = None
+            self._update_axis_button_states()
+            n = len(self.axis_results)
+            self.status_lbl.configure(
+                text=f"Axis {axis} done ({n}/3).", text_color="cyan"
+            )
+            if n == 3:
+                self.apply_btn.configure(state="normal")
+                self.status_lbl.configure(
+                    text="All axes done. Review & Apply Matrix.", text_color="lime"
+                )
+
+    def on_calib_stopped(self, preserve_status: bool = False):
         """Called by dashboard when calibration process exits."""
-        self._active = False
-        self._has_data = True
+        self._calib_active = False
+        self._current_axis = None
         self.toggle_btn.configure(
             text="Enter Calibration", fg_color="#1f6aa5", hover_color="#144870"
         )
-        self.apply_btn.configure(state="normal")
-        self.status_lbl.configure(
-            text="Stopped. Apply or re-enter.", text_color="orange"
-        )
+        self._update_axis_button_states()
+        self.stop_axis_btn.configure(state="disabled")
+        if not preserve_status:
+            self.status_lbl.configure(
+                text="Stopped. Apply or re-enter.", text_color="orange"
+            )
 
     def reset(self):
-        self._active = False
-        self._has_data = False
+        self._calib_active = False
+        self._current_axis = None
+        self.axis_results.clear()
         self.toggle_btn.configure(
             text="Enter Calibration",
-            fg_color="#1f6aa5",
-            hover_color="#144870",
+            fg_color="#1f6aa5", hover_color="#144870",
             state="normal",
         )
+        for axis in ("x", "y", "z"):
+            getattr(self, f"btn_cal_{axis}").configure(state="disabled")
+            getattr(self, f"lbl_result_{axis}").configure(
+                text=f"{axis.upper()}: --", text_color="white"
+            )
+        self.stop_axis_btn.configure(state="disabled")
         self.apply_btn.configure(state="disabled")
-        self.lbl_dx.configure(text="0")
-        self.lbl_dy.configure(text="0")
+        self.lbl_dx.configure(text="Raw DX: 0")
+        self.lbl_dy.configure(text="Raw DY: 0")
+        self.lbl_dz.configure(text="Raw DZ: 0")
         self.status_lbl.configure(text="Idle", text_color="gray")
 
     # ---- internal ----
 
+    def _update_axis_button_states(self):
+        base = "normal" if self._calib_active and self._current_axis is None else "disabled"
+        for axis in ("x", "y", "z"):
+            btn = getattr(self, f"btn_cal_{axis}")
+            if self._calib_active and self._current_axis is None:
+                btn.configure(state="normal")
+            else:
+                btn.configure(state="disabled")
+
     def _on_toggle(self):
-        if not self._active:
-            self._active = True
-            self._has_data = False
+        if not self._calib_active:
+            self._calib_active = True
+            self.axis_results.clear()
+            self._current_axis = None
             self.toggle_btn.configure(
                 text="Exit Calibration", fg_color="red", hover_color="darkred"
             )
+            for axis in ("x", "y", "z"):
+                getattr(self, f"lbl_result_{axis}").configure(
+                    text=f"{axis.upper()}: --", text_color="white"
+                )
             self.apply_btn.configure(state="disabled")
-            self.lbl_dx.configure(text="0")
-            self.lbl_dy.configure(text="0")
-            self.status_lbl.configure(text="Calibrating...", text_color="cyan")
+            self.lbl_dx.configure(text="Raw DX: 0")
+            self.lbl_dy.configure(text="Raw DY: 0")
+            self.lbl_dz.configure(text="Raw DZ: 0")
+            self.status_lbl.configure(text="Calibration active. Pick an axis.", text_color="cyan")
+            self._update_axis_button_states()
             if self._cb_enter:
                 self._cb_enter()
         else:
@@ -144,30 +337,99 @@ class CalibrationPanel:
             if self._cb_exit:
                 self._cb_exit()
 
-    def _on_apply(self):
+    def _on_start_axis(self, axis: str):
         try:
-            ref_deg = float(self.ref_var.get())
+            radius = float(self.radius_var.get())
+            rotations = float(self.rotations_var.get())
         except ValueError:
-            self.status_lbl.configure(text="Invalid reference angle", text_color="red")
+            self.status_lbl.configure(text="Invalid radius/rotations", text_color="red")
             return
+        self._current_axis = axis
+        self.stop_axis_btn.configure(state="normal")
+        self._update_axis_button_states()
+        self.lbl_dx.configure(text="Raw DX: 0")
+        self.lbl_dy.configure(text="Raw DY: 0")
+        self.lbl_dz.configure(text="Raw DZ: 0")
+        self.status_lbl.configure(text=f"Calibrating {axis} axis...", text_color="cyan")
+        if self._cb_start_axis:
+            self._cb_start_axis(axis, radius, rotations)
 
-        try:
-            raw_dx = int(self.lbl_dx.cget("text"))
-            raw_dy = int(self.lbl_dy.cget("text"))
-        except (ValueError, TypeError):
-            self.status_lbl.configure(text="Invalid raw data", text_color="red")
+    def _on_stop_axis(self):
+        if self._current_axis is None:
             return
-
-        factors = {
-            "dx": ref_deg / raw_dx if raw_dx != 0 else 1.0,
-            "dy": ref_deg / raw_dy if raw_dy != 0 else 1.0,
-        }
+        self.stop_axis_btn.configure(state="disabled")
         self.status_lbl.configure(
-            text=f"Applied: dx={factors['dx']:.6f}, dy={factors['dy']:.6f}",
-            text_color="lime",
+            text=f"Stopping {self._current_axis} axis...", text_color="gray"
         )
-        if self._cb_apply:
-            self._cb_apply(factors)
+        if self._cb_stop_axis:
+            self._cb_stop_axis()
+
+    def update_matrix_display(self, matrix: List[List[float]]):
+        """Populate the 3x3 entry grid with values from a matrix."""
+        for r in range(3):
+            for c in range(3):
+                self._matrix_vars[r][c].set(f"{matrix[r][c]:.4f}")
+
+    def _on_manual_save(self):
+        """Read the 3x3 grid, validate, and fire the apply_matrix callback."""
+        matrix: List[List[float]] = []
+        try:
+            for r in range(3):
+                row: List[float] = []
+                for c in range(3):
+                    row.append(float(self._matrix_vars[r][c].get()))
+                matrix.append(row)
+        except ValueError:
+            self.status_lbl.configure(
+                text="Invalid matrix value — must be numeric", text_color="red"
+            )
+            return
+        if self._cb_apply_matrix:
+            self._cb_apply_matrix(matrix)
+        self.status_lbl.configure(text="Manual matrix saved", text_color="lime")
+
+    def _on_apply(self):
+        if len(self.axis_results) < 3:
+            self.status_lbl.configure(text="Need all 3 axes first", text_color="red")
+            return
+        matrix = self._compute_transformation_matrix()
+        if matrix is None:
+            self.status_lbl.configure(
+                text="Singular Matrix: No valid pulses detected. Check sensors.",
+                text_color="red",
+            )
+            return
+        self.status_lbl.configure(text="Matrix applied.", text_color="lime")
+        if self._cb_apply_matrix:
+            self._cb_apply_matrix(matrix)
+
+    def _compute_transformation_matrix(self):
+        """Build the 3x3 decoupling matrix from per-axis calibration data.
+
+        raw_matrix rows = raw vectors from each axis calibration.
+        target_matrix = diag(target_mm per axis).
+        transformation = inverse(raw_matrix) * target_matrix.
+        """
+        try:
+            raw_rows = []
+            targets = []
+            for axis in ("X", "Y", "Z"):
+                r = self.axis_results[axis]
+                raw_rows.append([float(v) for v in r["raw_vector"]])
+                targets.append(float(r["target_mm"]))
+
+            det = _det3(raw_rows)
+            if abs(det) < 1e-12:
+                return None
+            inv = _inv3(raw_rows, det)
+            target_diag = [
+                [targets[0], 0.0, 0.0],
+                [0.0, targets[1], 0.0],
+                [0.0, 0.0, targets[2]],
+            ]
+            return _transpose3(_matmul3(inv, target_diag))
+        except Exception:
+            return None
 
 
 class MasterDashboard:
@@ -202,6 +464,7 @@ class MasterDashboard:
 
         self._param_vars: Dict[str, ctk.StringVar] = {}
         self._param_widgets: List[ctk.CTkBaseClass] = []
+        self._exit_attempts: int = 0
         self._create_widgets()
         self._load_default_config()
         self._on_paradigm_change()
@@ -386,7 +649,9 @@ class MasterDashboard:
         self._calib_panel.set_callbacks(
             enter=self._start_calibration,
             exit_=self._stop_calibration,
-            apply=self._apply_calibration,
+            start_axis=self._start_axis_calibration,
+            stop_axis=self._stop_axis_calibration,
+            apply_matrix=self._apply_calibration_matrix,
         )
 
         # --- Status panel ---
@@ -592,7 +857,35 @@ class MasterDashboard:
     # Default config / helpers
     # ------------------------------------------------------------------
     def _load_default_config(self):
-        pass
+        self._calib_matrix = None
+        try:
+            root_dir = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            cfg_path = os.path.join(root_dir, "calibration_cfg.json")
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, "r") as f:
+                    data = json.load(f)
+                # Support both old factor format and new matrix format
+                if isinstance(data, list) and len(data) == 3:
+                    self._calib_matrix = data
+                    self._calib_panel.update_matrix_display(data)
+                    self._calib_panel.status_lbl.configure(
+                        text="Matrix loaded from file", text_color="lime"
+                    )
+                elif isinstance(data, dict):
+                    # Legacy scalar factors — convert to diagonal matrix
+                    self._calib_matrix = [
+                        [data.get("dx", 1.0), 0.0, 0.0],
+                        [0.0, data.get("dy", 1.0), 0.0],
+                        [0.0, 0.0, data.get("dz", 1.0)],
+                    ]
+                    self._calib_panel.update_matrix_display(self._calib_matrix)
+                    self._calib_panel.status_lbl.configure(
+                        text="Legacy factors loaded (as diagonal matrix)", text_color="lime"
+                    )
+        except Exception:
+            pass
 
     def _safe_int(self, val_str: str, default: int) -> int:
         return int(val_str) if val_str.strip().isdigit() else default
@@ -691,12 +984,12 @@ class MasterDashboard:
             if q is not None:
                 try:
                     q.cancel_join_thread()
-                except Exception:
+                except (OSError, ValueError):
                     pass
                 self._drain_queue_async(q)
                 try:
                     q.close()
-                except Exception:
+                except (OSError, ValueError):
                     pass
                 setattr(self, q_name, None)
 
@@ -706,12 +999,12 @@ class MasterDashboard:
             if q is not None:
                 try:
                     q.cancel_join_thread()
-                except Exception:
+                except (OSError, ValueError):
                     pass
                 self._drain_queue_async(q)
                 try:
                     q.close()
-                except Exception:
+                except (OSError, ValueError):
                     pass
                 setattr(self, q_name, None)
 
@@ -720,10 +1013,10 @@ class MasterDashboard:
         """Drain a queue in a daemon thread to avoid blocking the GUI."""
 
         def _drain():
-            for _ in range(4096):
+            while True:
                 try:
-                    q.get_nowait()
-                except (queue.Empty, ValueError, OSError):
+                    q.get(timeout=0.05)
+                except (queue.Empty, ValueError, OSError, EOFError, BrokenPipeError):
                     break
 
         t = threading.Thread(target=_drain, daemon=True)
@@ -782,6 +1075,27 @@ class MasterDashboard:
         )
         self.calib_process.start()
 
+    def _start_axis_calibration(self, axis: str, radius_mm: float, rotations: float):
+        """Send START_CALIBRATION command for a specific axis."""
+        if self.calib_cmd_queue:
+            try:
+                self.calib_cmd_queue.put_nowait({
+                    "action": "START_CALIBRATION",
+                    "axis": axis,
+                    "radius_mm": radius_mm,
+                    "rotations": rotations,
+                })
+            except queue.Full:
+                pass
+
+    def _stop_axis_calibration(self):
+        """Send STOP_AXIS command to the calibration worker."""
+        if self.calib_cmd_queue:
+            try:
+                self.calib_cmd_queue.put_nowait({"action": "STOP_AXIS"})
+            except queue.Full:
+                pass
+
     def _stop_calibration(self):
         """Send POISON_PILL to CalibrationWorker."""
         if self.calib_cmd_queue:
@@ -790,25 +1104,39 @@ class MasterDashboard:
             except queue.Full:
                 pass
 
-    def _apply_calibration(self, factors: dict):
-        """Write factors into config, kill calib worker, restart stimulus worker."""
+    def _apply_calibration_matrix(self, matrix: list):
+        """Save the matrix, stop the calib worker, inject into hardware."""
         self._stop_calibration()
-        self._close_calib_queues()
-        self._kill_worker(self.calib_process)
-        self.calib_process = None
 
-        self._calib_factors = factors
-        self.start_btn.configure(state="normal")
-        self.status_label.configure(text="Calibration applied", text_color="lime")
+        self._calib_matrix = matrix
+        try:
+            root_dir = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            cfg_path = os.path.join(root_dir, "calibration_cfg.json")
+            with open(cfg_path, "w") as f:
+                json.dump(matrix, f, indent=2)
+        except Exception:
+            pass
+        self._calib_panel.update_matrix_display(matrix)
+        self._calib_just_applied = True
+        self.status_label.configure(text="Calibration matrix applied & saved", text_color="lime")
 
     def _on_calib_process_exit(self):
         """Clean up after calibration worker exits."""
         self._close_calib_queues()
         self._kill_worker(self.calib_process)
         self.calib_process = None
-        self._calib_panel.on_calib_stopped()
+
+        just_applied = getattr(self, "_calib_just_applied", False)
+
+        self._calib_panel.on_calib_stopped(preserve_status=just_applied)
         self.start_btn.configure(state="normal")
-        self.status_label.configure(text="Ready", text_color="white")
+
+        if not just_applied:
+            self.status_label.configure(text="Ready", text_color="white")
+        else:
+            self._calib_just_applied = False
 
     # ---- Experiment lifecycle ----
 
@@ -821,9 +1149,9 @@ class MasterDashboard:
         self.cmd_queue, self.telemetry_queue = create_ipc_queues()
 
         cfg = self._build_config()
-        # Inject calibration factors if available
-        if hasattr(self, "_calib_factors") and self._calib_factors:
-            cfg["calib_factors"] = self._calib_factors
+        # Inject calibration matrix if available
+        if hasattr(self, "_calib_matrix") and self._calib_matrix:
+            cfg["calib_matrix"] = self._calib_matrix
 
         self.worker_process = mp.Process(
             target=worker_entry, args=(cfg, self.cmd_queue, self.telemetry_queue)
@@ -846,18 +1174,28 @@ class MasterDashboard:
     # ------------------------------------------------------------------
     def _poll_telemetry(self):
         if self.telemetry_queue:
+            # Drain queue in a single pass, keeping only the latest frame per category
+            batch_count = 0
+            salvaged_event = None
             latest_telemetry = None
             terminal_event = None
 
-            for _ in range(100):
+            while not self.telemetry_queue.empty():
                 try:
                     data = self.telemetry_queue.get_nowait()
+                    batch_count += 1
                     action = data.get("action")
+
                     if action == "telemetry":
                         latest_telemetry = data
                     elif action in ["worker_done", "worker_abort", "worker_error"]:
                         terminal_event = data
-                except queue.Empty:
+                        salvaged_event = data
+
+                    if batch_count > 100:
+                        self.status_label.configure(text="Warning: UI Telemetry Lag Detected", text_color="orange")
+                        break
+                except (queue.Empty, ValueError, OSError):
                     break
 
             if latest_telemetry:
@@ -866,16 +1204,47 @@ class MasterDashboard:
 
             if terminal_event:
                 action = terminal_event.get("action")
+                self._worker_terminal_status = action
+                self._worker_terminal_error = terminal_event.get("error", "")
+
+                self.stop_btn.configure(state="disabled")
                 if action == "worker_done":
-                    self._reset_ui("Experiment completed", "white")
+                    self.status_label.configure(text="Experiment completed. Cleaning up...", text_color="white")
                 elif action == "worker_abort":
-                    self._reset_ui("Experiment aborted", "orange")
+                    self.status_label.configure(text="Experiment aborted. Cleaning up...", text_color="orange")
                 elif action == "worker_error":
-                    self._reset_ui(f"Error: {terminal_event.get('error')}", "red")
+                    self.status_label.configure(text=f"Error: {self._worker_terminal_error}", text_color="red")
 
         if self.worker_process and not self.worker_process.is_alive():
-            if self.start_btn.cget("state") == "disabled" and not self.calib_process:
-                self._reset_ui("Worker disconnected", "white")
+            # Salvage terminal signals that may be buried deep in the queue
+            if self.telemetry_queue:
+                while not self.telemetry_queue.empty():
+                    try:
+                        frame = self.telemetry_queue.get_nowait()
+                        if frame.get("action") in ["worker_done", "worker_abort", "worker_error"]:
+                            self._worker_terminal_status = frame.get("action")
+                            if "error" in frame:
+                                self._worker_terminal_error = frame["error"]
+                    except (queue.Empty, ValueError, OSError):
+                        break
+
+            status = getattr(self, "_worker_terminal_status", None)
+            color, text = "white", "Ready"
+
+            if status == "worker_done":
+                text, color = "Experiment completed", "lime"
+            elif status == "worker_abort":
+                text, color = "Experiment aborted", "orange"
+            elif status == "worker_error":
+                text, color = f"Error: {getattr(self, '_worker_terminal_error', 'Unknown')}", "red"
+            elif self.start_btn.cget("state") == "disabled" and not self.calib_process:
+                text, color = "Worker disconnected", "gray"
+            else:
+                text, color = None, None
+
+            if text:
+                self._reset_ui(text, color)
+            self._worker_terminal_status = None
 
         # --- Calibration telemetry ---
         if self.calib_telemetry_queue:
@@ -885,6 +1254,8 @@ class MasterDashboard:
                     action = data.get("action")
                     if action == "calibration_telemetry":
                         self._calib_panel.handle_telemetry(data)
+                    elif action == "axis_calib_done":
+                        self._calib_panel.handle_axis_done(data)
                     elif action in ("calibration_done", "calibration_error"):
                         self._on_calib_process_exit()
                         break
@@ -964,13 +1335,40 @@ class MasterDashboard:
             self.worker_process = None
 
     def on_closing(self):
-        self._stop_calibration()
-        self._close_calib_queues()
-        self._kill_worker(self.calib_process)
-        self.stop_experiment()
-        self._close_queues()
-        self._kill_worker(self.worker_process)
-        self.root.destroy()
+        """Gracefully signal all workers and poll for exit."""
+        self._exit_attempts = 0
+        if self.calib_cmd_queue:
+            try:
+                self.calib_cmd_queue.put_nowait({"action": "POISON_PILL"})
+            except (queue.Full, OSError):
+                pass
+        if self.cmd_queue:
+            try:
+                self.cmd_queue.put_nowait({"action": "POISON_PILL"})
+            except (queue.Full, OSError):
+                pass
+        self.root.after(100, self._check_safe_exit)
+
+    def _check_safe_exit(self):
+        """Poll until both processes exit, then destroy; force after 2s."""
+        self._exit_attempts += 1
+        worker_alive = self.worker_process is not None and self.worker_process.is_alive()
+        calib_alive = self.calib_process is not None and self.calib_process.is_alive()
+
+        if not worker_alive and not calib_alive:
+            self._close_queues()
+            self._close_calib_queues()
+            self.root.destroy()
+        elif self._exit_attempts >= 20:
+            if self.worker_process and self.worker_process.is_alive():
+                self._kill_worker(self.worker_process)
+            if self.calib_process and self.calib_process.is_alive():
+                self._kill_worker(self.calib_process)
+            self._close_queues()
+            self._close_calib_queues()
+            self.root.destroy()
+        else:
+            self.root.after(100, self._check_safe_exit)
 
 
 def main():
