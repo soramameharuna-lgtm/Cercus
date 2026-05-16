@@ -113,9 +113,10 @@ class SerialDaemon:
                     time.sleep(0.001)
                     continue
 
-                raw = self._serial.readline()
-                # Timestamp sampled immediately after read completes
+                # Sample timestamp at earliest moment data is known present,
+                # before the (potentially blocking) readline call.
                 t_sys = self._time_func()
+                raw = self._serial.readline()
 
                 clean_raw = raw.decode("ascii", errors="ignore").strip()
                 if clean_raw:
@@ -162,6 +163,9 @@ class SerialDaemon:
             except queue.Empty:
                 break
         return items
+
+    def is_alive(self) -> bool:
+        return self._running
 
     def stop(self):
         self._running = False
@@ -217,6 +221,9 @@ class MockSerialDaemon:
             except queue.Empty:
                 break
         return items
+
+    def is_alive(self) -> bool:
+        return self._running
 
     def stop(self):
         self._running = False

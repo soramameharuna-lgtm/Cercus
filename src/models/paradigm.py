@@ -18,6 +18,7 @@ class BaseParadigm(ABC):
                 seed = np.random.randint(0, 2**31 - 1)
         random.seed(seed)
         np.random.seed(seed)
+        config["Random Seed"] = seed
 
     @classmethod
     def _schema_default(cls, key: str) -> Any:
@@ -661,6 +662,8 @@ class OpticFlowParadigm(BaseParadigm):
                 "Trial Duration (s)", self._schema_default("Trial Duration (s)")
             )
         )
+        self.viewing_distance_cm = float(self.config.get("Viewing Distance (cm)", 30.0))
+        self.screen_width_cm = float(self.config.get("Screen Width (cm)", 53.0))
 
         self.scale = 0.3 if debug_mode else 1.0
 
@@ -681,6 +684,11 @@ class OpticFlowParadigm(BaseParadigm):
         angles[coh_count:] = np.random.uniform(0.0, 360.0, self.density - coh_count)
         self._dx = np.cos(np.radians(angles))
         self._dy = np.sin(np.radians(angles))
+
+    def _deg_to_pix(self, deg: float) -> float:
+        deg = min(deg, 179.99)
+        r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
+        return r_cm * (self.screen_w / self.screen_width_cm) * self.scale
 
     @classmethod
     def get_available_patterns(cls) -> List[str]:
@@ -785,6 +793,7 @@ class OpticFlowParadigm(BaseParadigm):
         self._dy = np.sin(np.radians(angles))
 
         self._last_time = 0.0
+        self._coh_count = int(density * coherence)
 
         return ""
 
@@ -825,16 +834,44 @@ class OpticFlowParadigm(BaseParadigm):
             dt = 1.0 / 60.0
         self._last_time = elapsed_time
 
-        step = speed * self.scale * (dt * 60.0)
+        step = self._deg_to_pix(speed) * (dt * 60.0)
         self._x += self._dx * step
         self._y += self._dy * step
 
         half_w = self.screen_w / 2.0
         half_h = self.screen_h / 2.0
-        self._x = np.where(self._x > half_w, self._x - self.screen_w, self._x)
-        self._x = np.where(self._x < -half_w, self._x + self.screen_w, self._x)
-        self._y = np.where(self._y > half_h, self._y - self.screen_h, self._y)
-        self._y = np.where(self._y < -half_h, self._y + self.screen_h, self._y)
+        coh_count = getattr(self, "_coh_count", density)
+
+        # Frame-level annihilation: 3% chance per frame for all particles
+        annihilated = np.random.random(density) < 0.03
+        noise = np.arange(density) >= coh_count
+        annihilated &= noise  # only noise particles can be annihilated
+        if np.any(annihilated):
+            self._x[annihilated] = np.random.uniform(-half_w, half_w, annihilated.sum())
+            self._y[annihilated] = np.random.uniform(-half_h, half_h, annihilated.sum())
+            new_angles = np.random.uniform(0.0, 360.0, annihilated.sum())
+            self._dx[annihilated] = np.cos(np.radians(new_angles))
+            self._dy[annihilated] = np.sin(np.radians(new_angles))
+
+        # Wrap-around boundary check
+        wrapped = np.zeros(density, dtype=bool)
+        mask_right = self._x > half_w
+        mask_left = self._x < -half_w
+        mask_top = self._y > half_h
+        mask_bottom = self._y < -half_h
+        wrapped |= mask_right | mask_left | mask_top | mask_bottom
+
+        self._x = np.where(mask_right, self._x - self.screen_w, self._x)
+        self._x = np.where(mask_left, self._x + self.screen_w, self._x)
+        self._y = np.where(mask_top, self._y - self.screen_h, self._y)
+        self._y = np.where(mask_bottom, self._y + self.screen_h, self._y)
+
+        # Re-randomize direction for wrapped noise particles to break visual streaks
+        wrapped_noise = wrapped & noise
+        if np.any(wrapped_noise):
+            new_angles = np.random.uniform(0.0, 360.0, wrapped_noise.sum())
+            self._dx[wrapped_noise] = np.cos(np.radians(new_angles))
+            self._dy[wrapped_noise] = np.sin(np.radians(new_angles))
 
         bg = {
             "id": "_bg",
@@ -1065,10 +1102,10 @@ class MovementTraceParadigm(BaseParadigm):
             {
                 "type": "element_array",
                 "n_elements": self.n_trail,
-                "xys": np.column_stack([self._trail_x, self._trail_y]),
-                "sizes": np.linspace(12.0, 2.0, self.n_trail),
-                "colors": self._trail_colors,
-                "opacities": np.ones(self.n_trail),
+                "xys": np.column_stack([self._trail_x, self._trail_y])[::-1],
+                "sizes": np.column_stack([np.linspace(12.0, 2.0, self.n_trail)] * 2)[::-1],
+                "colors": self._trail_colors[::-1],
+                "opacities": np.ones(self.n_trail)[::-1],
             },
         ]
 

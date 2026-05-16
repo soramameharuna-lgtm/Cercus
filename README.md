@@ -6,65 +6,71 @@
 
 The system enforces strict unidirectional data flow and functional isolation:
 
-- **Master Dashboard (`dashboard.py`)**: A non-blocking GUI responsible for parameter configuration, process lifecycle management, and low-frequency status monitoring (Digital Twin).
-- **Pure Logic Core (`paradigm.py`)**: A mathematical modeling layer with zero renderer dependencies. It takes time deltas and hardware feedback to output standardized rendering instruction streams and telemetry states.
-- **Stateless Renderer (`core_render.py`)**: A PsychoPy drawing container. It only executes basic geometric drawing instructions from the logic core, enabling plug-and-play rendering.
-- **Asynchronous Hardware Daemon (`core_hardware.py`)**: A serial communication layer guarded by an independent thread, handling high-frequency sensor data acquisition and TTL trigger signal dispatch.
-- **Dual-Track Logger (`core_logger.py`)**: Separates high-frequency kinematics telemetry (Kinematics Log) from low-frequency experimental state transitions (Event Log).
+- **Master Dashboard (`dashboard.py`)**: A non-blocking GUI responsible for parameter configuration, dynamic form generation, and low-frequency status monitoring.
+- **Pure Logic Core (`paradigm.py`)**: A mathematical modeling layer. It processes time deltas and hardware feedback to output standardized rendering instruction streams and telemetry states.
+- **Stateless Renderer (`core_render.py`)**: Executes basic geometric drawing instructions (e.g., `circle`, `rect`, `element_array`) without maintaining state.
+- **Asynchronous Hardware Daemon (`core_hardware.py`)**: Handles high-frequency sensor data acquisition and TTL trigger signal dispatch.
+- **Dual-Track Logger (`core_logger.py`)**: Separates high-frequency kinematics telemetry from low-frequency experimental state transitions.
 
 ## 2. Core Features & Execution Modes
 
 - **Dual-Track Execution Mode**:
-    - **Auto**: Standard procedure for behavioral assays. Continuously executes the entire session automatically based on randomized ITI/ISI intervals.
-    - **Manual**: Standard procedure for electrophysiology. After the ITI, the renderer safely suspends (maintaining the visual baseline and hardware heartbeat) and waits for external input (`Space` bar) to precisely trigger a single trial.
-- **Digital Twin Monitor**: The master UI includes a real-time miniature monitor that maps the 3840x1080 dual-screen stimulus state to the control panel.
-- **Hardware Fallback**: If no hardware is available, the serial port can be set to `mock` to inject a virtual data stream, ensuring the debugging pipeline remains uninterrupted.
+  - **Auto**: Continuously executes the entire session automatically based on randomized ITI/ISI intervals.
+  - **Manual**: After the ITI, the renderer safely suspends and waits for external input (`Space` bar) to precisely trigger a single trial.
+- **Digital Twin Monitor**: The master UI includes a miniature monitor that maps the physical dual-screen stimulus state proportionally.
+- **Hardware Fallback**: If no hardware is available, the serial port can be configured to `mock` to inject a virtual data stream for debugging.
 
 ## 3. Built-in Paradigms
 
-The system currently includes two standard paradigm matrices, both accessible via the UI dropdown menu:
+Four standard paradigm matrices are currently built-in and can be dynamically loaded and configured via the dashboard:
 
 1. **Multimodal Looming (Looming Paradigm)**:
-    - Includes `Baseline Visual` and `Baseline Wind`.
-    - Contains 7 precisely calibrated visuo-tactile multisensory stimuli (`Looming + Wind`), providing gradient wind field hardware triggers from TTC -373ms to +200ms.
+   - Includes pure visual and pure wind baselines.
+   - Contains 7 calibrated visuo-tactile multisensory stimuli with gradient wind field triggers from TTC -373ms to +200ms.
 2. **Classic Visual Looming (ClassicLooming Paradigm)**:
-    - A pure visual parameterized model. Supports dynamic UI configuration of `l/v Ratio (ms)`, `Initial Degree`, and `Final Degree`.
-    - Supports presentation logic: `Random L/R`, `Always Left`, and `Always Right`.
+   - Pure visual parameterized model. Supports dynamic configuration of `l/v Ratio`, initial/final degrees, and left/right presentation logic.
+3. **Optic Flow (OpticFlow Paradigm)**:
+   - Vectorized dot-motion model. Configurable speed, density, coherence, and direction.
+4. **Movement Trace (MovementTrace Paradigm)**:
+   - Lissajous trajectory tracking. Configurable X/Y frequency, amplitude, and trail length.
 
-## 4. Installation
+## 4. Installation & Execution
 
-It is recommended to run this system within an isolated virtual environment (e.g., Conda). Core dependencies include UI, visual rendering, and hardware communication modules:
+Run the system within an isolated virtual environment (e.g., Conda). Install dependencies:
 
-```bash
+Bash
+
+```
 pip install -r requirements.txt
 ```
 
-## 5. Running an Experiment
+Launch the dashboard:
 
-**Step 1: Launch the Dashboard**
-Execute the entry file in your terminal:
+Bash
 
-```bash
+```
 python main.py
 ```
 
-**Step 2: Configure Parameters**
-Fill in the core information (Subject ID, Mode, Paradigm, Physical Parameters, and Serial Port).
-_Note: When **Debug Mode** is enabled, the renderer launches in a windowed mode (1200x600) and bypasses WaitBlanking, facilitating debugging on single-screen setups._
+## 5. Data Output Specifications
 
-**Step 3: Execution and Monitoring**
-Click "Start Experiment". If in Manual mode, follow the status bar prompts to trigger via `Space`; if in Auto mode, the system will initiate the closed-loop process automatically.
+Dual-track record files are automatically generated in the `data/` directory, strictly aligned via `global_trial_id` and timestamps:
 
-## 6. Data Output Specifications
+1. `{Subject}_session_{n}_events.csv`: Logs low-frequency control flow events and parameter details.
+2. `{Subject}_session_{n}_kinematics.csv`: Logs high-frequency closed-loop telemetry data.
 
-Upon starting the experiment, the system automatically generates dual-track record files in the `data/` directory. Each session yields two files, strictly aligned via `global_trial_id` and timestamps:
+## 6. Extension: Adding New Paradigms
 
-1. `{Subject}_session_{n}_events.csv`: Logs low-frequency control flow events (including variable-length JSON details).
-2. `{Subject}_session_{n}_kinematics.csv`: Logs extremely high-frequency closed-loop telemetry data (dx, dy, dz, etc.).
+New experimental paradigms can be introduced without modifying the underlying rendering or control flow code. Implement the following in `src/models/paradigm.py`:
 
-## 7. Extension: Adding New Paradigms
-
-To introduce entirely new experimental paradigms, there is no need to modify the underlying rendering or control flow code. You simply need to:
-
-1. Create a new class inheriting from `BaseParadigm` in `src/models/paradigm.py`.
-2. Implement the `process_frame()` method: Calculate theoretical coordinates in memory and return a standardized instruction dictionary (containing `id`, `type`, `pos`, `radius`/`size`). The underlying renderer and scheduler will automatically handle the rest.
+1. **Inherit Base Class**: Create a new class inheriting from `BaseParadigm`.
+2. **Define UI Mapping Interfaces**:
+   - `get_available_patterns(cls)`: Return a list of supported pattern names.
+   - `get_parameter_schema(cls)`: Declare the dynamic UI parameter configuration dictionary. The framework uses the `type` field (e.g., `int`, `float`, `choice`, `bool`) to generate the dashboard form and injects values into the instance context.
+3. **Implement Core Lifecycle**:
+   - `generate_trials(self, pattern_key)`: Construct and return the trial contexts (`List[dict]`) for the session based on the selected pattern.
+   - `prepare_trial(self, trial_context)`: Return hardware initialization serial commands before a trial starts (or an empty string).
+   - `get_idle_frame(self, hw_telemetry)`: Return steady-state rendering instructions for ITI/ISI phases as `(cmds, telemetry_dict, sync_states)`.
+   - `process_frame(self, elapsed_time, trial_context, hw_telemetry)`: The frame-level closed-loop calculation core. Return the state tuple `(is_done, cmds, telemetry_dict, sync_states)` based on the timestamp and hardware telemetry.
+4. **Standardized Instructions**: The `cmds` returned must use standardized dictionaries supported by the renderer (e.g., `type="rect"`, `type="element_array"`, with `pos`, `colors`, `sizes`).
+5. **Global Registration**: Add the new class to the `PARADIGM_REGISTRY` dictionary at the bottom of `src/models/paradigm.py` to enable dashboard parsing.

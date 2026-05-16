@@ -31,6 +31,10 @@ class ExperimentAbort(Exception):
     pass
 
 
+class HardwareDisconnectError(Exception):
+    pass
+
+
 class GenericWorker:
     def __init__(self, config: Dict[str, Any], cmd_q: mp.Queue, telemetry_q: mp.Queue):
         from src.models.paradigm import BaseParadigm
@@ -195,6 +199,8 @@ class GenericWorker:
             while clock.getTime() - t0 < 5.0:
                 self._sync_state()
                 hw_tel = self._drain_hardware(logger, hw_daemon)
+                if hw_daemon and not hw_daemon.is_alive():
+                    raise HardwareDisconnectError("Serial daemon died")
                 cmds, tel, sync_states = self.paradigm.get_idle_frame(hw_tel)
                 tel["phase"] = "Adaptation"
                 tel["ui_color"] = "#ff4d4d"
@@ -208,6 +214,8 @@ class GenericWorker:
                 while True:
                     self._sync_state(clear_keys=False)
                     hw_tel = self._drain_hardware(logger, hw_daemon)
+                    if hw_daemon and not hw_daemon.is_alive():
+                        raise HardwareDisconnectError("Serial daemon died")
                     cmds, tel, sync_states = self.paradigm.get_idle_frame(hw_tel)
                     tel["phase"] = "WAIT [SPACE] (Auto Start)"
                     tel["ui_color"] = "orange"
@@ -257,6 +265,8 @@ class GenericWorker:
                             while clock.getTime() - t_iti < dur:
                                 self._sync_state()
                                 hw_tel = self._drain_hardware(logger, hw_daemon)
+                                if hw_daemon and not hw_daemon.is_alive():
+                                    raise HardwareDisconnectError("Serial daemon died")
                                 cmds, tel, sync_states = self.paradigm.get_idle_frame(
                                     hw_tel
                                 )
@@ -275,6 +285,8 @@ class GenericWorker:
                         while True:
                             self._sync_state(clear_keys=False)
                             hw_tel = self._drain_hardware(logger, hw_daemon)
+                            if hw_daemon and not hw_daemon.is_alive():
+                                raise HardwareDisconnectError("Serial daemon died")
                             cmds, tel, sync_states = self.paradigm.get_idle_frame(
                                 hw_tel
                             )
@@ -305,6 +317,8 @@ class GenericWorker:
                         self._sync_state()
                         elap = clock.getTime() - t_trial
                         hw_tel = self._drain_hardware(logger, hw_daemon)
+                        if hw_daemon and not hw_daemon.is_alive():
+                            raise HardwareDisconnectError("Serial daemon died")
 
                         is_done, cmds, tel, sync_states = self.paradigm.process_frame(
                             elap, trial, hw_tel
@@ -336,6 +350,8 @@ class GenericWorker:
                         while clock.getTime() - t_isi < isi_dur:
                             self._sync_state()
                             hw_tel = self._drain_hardware(logger, hw_daemon)
+                            if hw_daemon and not hw_daemon.is_alive():
+                                raise HardwareDisconnectError("Serial daemon died")
                             cmds, tel, sync_states = self.paradigm.get_idle_frame(hw_tel)
                             tel["phase"] = f"ISI ({clock.getTime()-t_isi:.1f}s)"
                             tel["ui_color"] = "orange"

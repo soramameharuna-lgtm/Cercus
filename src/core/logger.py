@@ -60,16 +60,20 @@ class GroundTruthLogger:
         base_name = f"{subject_id}_session_{session_num}"
 
         event_path = os.path.join(self.out, f"{base_name}_events.csv")
-        self._event_file = open(event_path, "w", newline="", encoding="utf-8-sig")
+        event_exists = os.path.exists(event_path) and os.path.getsize(event_path) > 0
+        self._event_file = open(event_path, "a", newline="", encoding="utf-8-sig")
         self._event_writer = csv.writer(self._event_file)
-        self._event_writer.writerow(self.EVENT_COLUMNS)
+        if not event_exists:
+            self._event_writer.writerow(self.EVENT_COLUMNS)
 
         kinematics_path = os.path.join(self.out, f"{base_name}_kinematics.csv")
+        kin_exists = os.path.exists(kinematics_path) and os.path.getsize(kinematics_path) > 0
         self._kinematics_file = open(
-            kinematics_path, "w", newline="", encoding="utf-8-sig"
+            kinematics_path, "a", newline="", encoding="utf-8-sig"
         )
         self._kinematics_writer = csv.writer(self._kinematics_file)
-        self._kinematics_writer.writerow(kin_headers)
+        if not kin_exists:
+            self._kinematics_writer.writerow(kin_headers)
 
     def is_open(self) -> bool:
         return self._event_writer is not None and self._kinematics_writer is not None

@@ -1,6 +1,7 @@
 import os
 import sys
 import queue
+import threading
 import multiprocessing as mp
 from typing import Dict, Any, Optional, List
 import customtkinter as ctk
@@ -18,76 +19,6 @@ from src.workers.stimulus_worker import worker_entry, create_ipc_queues
 from src.workers.calibration_worker import calibration_worker_entry
 
 
-class _SyncBlockRow:
-    """Single sync block entry in the topology configurator."""
-
-    def __init__(
-        self,
-        parent: ctk.CTkFrame,
-        block_id: int,
-        channel_name: str = "",
-        on_delete: Optional[callable] = None,
-    ):
-        self.frame = ctk.CTkFrame(parent, fg_color="transparent")
-        self.frame.pack(fill="x", padx=4, pady=2)
-        self._channel_name = channel_name
-        self._on_delete = on_delete
-
-        label_text = channel_name if channel_name else f"ID {block_id}"
-        ctk.CTkLabel(self.frame, text=label_text, width=120, anchor="w").pack(
-            side="left", padx=(0, 4)
-        )
-
-        self.x_var = ctk.StringVar(value="-1800")
-        self.y_var = ctk.StringVar(value="-500")
-        self.w_var = ctk.StringVar(value="80")
-        self.h_var = ctk.StringVar(value="80")
-
-        for lbl, var in [
-            ("X", self.x_var),
-            ("Y", self.y_var),
-            ("W", self.w_var),
-            ("H", self.h_var),
-        ]:
-            ctk.CTkLabel(self.frame, text=lbl, width=14).pack(side="left")
-            ctk.CTkEntry(self.frame, textvariable=var, width=50).pack(
-                side="left", padx=(0, 4)
-            )
-
-        ctk.CTkButton(
-            self.frame,
-            text="X",
-            width=28,
-            fg_color="gray30",
-            hover_color="red",
-            command=self._request_delete,
-        ).pack(side="right", padx=(4, 0))
-
-    def _request_delete(self):
-        if self._on_delete:
-            self._on_delete(self)
-
-    def get_topology(self, block_id: int) -> Dict[str, Any]:
-        return {
-            "id": block_id,
-            "channel": self._channel_name,
-            "x": self._safe_float(self.x_var.get(), 0.0),
-            "y": self._safe_float(self.y_var.get(), 0.0),
-            "w": self._safe_float(self.w_var.get(), 40.0),
-            "h": self._safe_float(self.h_var.get(), 40.0),
-        }
-
-    @staticmethod
-    def _safe_float(val: str, default: float) -> float:
-        try:
-            return float(val)
-        except ValueError:
-            return default
-
-    def destroy(self):
-        self.frame.destroy()
-
-
 class CalibrationPanel:
     """Physical calibration panel — delegates process lifecycle to MasterDashboard."""
 
@@ -97,7 +28,7 @@ class CalibrationPanel:
 
         # Callbacks set by MasterDashboard
         self._cb_enter = None  # called when user clicks "Enter Calibration"
-        self._cb_exit = None   # called when user clicks "Exit Calibration"
+        self._cb_exit = None  # called when user clicks "Exit Calibration"
         self._cb_apply = None  # called with (factors: dict) on Apply
 
         self.frame = ctk.CTkFrame(parent)
@@ -132,9 +63,7 @@ class CalibrationPanel:
 
         row_ref = ctk.CTkFrame(self.frame, fg_color="transparent")
         row_ref.pack(fill="x", padx=6, pady=2)
-        ctk.CTkLabel(row_ref, text="Ref (°):", width=70, anchor="w").pack(
-            side="left"
-        )
+        ctk.CTkLabel(row_ref, text="Ref (°):", width=70, anchor="w").pack(side="left")
         self.ref_var = ctk.StringVar(value="360")
         ctk.CTkEntry(row_ref, textvariable=self.ref_var, width=80).pack(
             side="left", padx=(4, 0)
@@ -185,7 +114,9 @@ class CalibrationPanel:
         self._active = False
         self._has_data = False
         self.toggle_btn.configure(
-            text="Enter Calibration", fg_color="#1f6aa5", hover_color="#144870",
+            text="Enter Calibration",
+            fg_color="#1f6aa5",
+            hover_color="#144870",
             state="normal",
         )
         self.apply_btn.configure(state="disabled")
@@ -271,8 +202,6 @@ class MasterDashboard:
 
         self._param_vars: Dict[str, ctk.StringVar] = {}
         self._param_widgets: List[ctk.CTkBaseClass] = []
-        self._sync_rows: List[_SyncBlockRow] = []
-
         self._create_widgets()
         self._load_default_config()
         self._on_paradigm_change()
@@ -306,8 +235,14 @@ class MasterDashboard:
         main_frame = ctk.CTkFrame(self.root)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
+        main_frame.grid_rowconfigure(0, weight=1)  # top_row gets vertical stretch
+        main_frame.grid_rowconfigure(1, weight=0)  # status_frame fixed height
+        main_frame.grid_rowconfigure(2, weight=0)  # status_label fixed height
+        main_frame.grid_rowconfigure(3, weight=0)  # ctrl_frame fixed height
+        main_frame.grid_columnconfigure(0, weight=1)
+
         top_row = ctk.CTkFrame(main_frame, fg_color="transparent")
-        top_row.pack(fill="both", expand=True, pady=(0, 5), padx=5)
+        top_row.grid(row=0, column=0, sticky="nsew", pady=(0, 5), padx=5)
 
         # --- Left: Config ---
         cfg_frame = ctk.CTkFrame(top_row)
@@ -441,32 +376,13 @@ class MasterDashboard:
         cfg_frame.grid_rowconfigure(8, weight=1)
         cfg_frame.grid_columnconfigure(0, weight=1)
 
-        # --- Right: Sync Topology ---
-        sync_outer = ctk.CTkFrame(top_row, width=340)
-        sync_outer.pack(side="right", fill="y", padx=(5, 0))
-        sync_outer.pack_propagate(False)
-
-        sync_header = ctk.CTkFrame(sync_outer, fg_color="transparent")
-        sync_header.pack(fill="x", padx=6, pady=(6, 2))
-        ctk.CTkLabel(
-            sync_header,
-            text="Sync Block Topology",
-            font=("Segoe UI", 13, "bold"),
-        ).pack(side="left")
-
-        self._sync_list_frame = ctk.CTkScrollableFrame(sync_outer, height=200)
-        self._sync_list_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-
-        ctk.CTkButton(
-            sync_outer,
-            text="+ Add Sync Block",
-            fg_color="gray25",
-            hover_color="gray35",
-            command=self._add_sync_block,
-        ).pack(fill="x", padx=6, pady=(0, 6))
+        # --- Right: Calibration Panel ---
+        right_panel = ctk.CTkFrame(top_row, width=340)
+        right_panel.pack(side="right", fill="y", padx=(5, 0))
+        right_panel.pack_propagate(False)
 
         # --- Calibration Panel ---
-        self._calib_panel = CalibrationPanel(sync_outer)
+        self._calib_panel = CalibrationPanel(right_panel)
         self._calib_panel.set_callbacks(
             enter=self._start_calibration,
             exit_=self._stop_calibration,
@@ -477,7 +393,7 @@ class MasterDashboard:
         status_frame = ctk.CTkFrame(
             main_frame, fg_color=("gray90", "gray13"), corner_radius=10
         )
-        status_frame.pack(fill="x", pady=10, padx=5)
+        status_frame.grid(row=1, column=0, sticky="ew", pady=10, padx=5)
         status_frame.grid_columnconfigure(0, weight=1)
         status_frame.grid_columnconfigure(1, weight=1)
 
@@ -505,19 +421,24 @@ class MasterDashboard:
         )
         self.canvas.pack()
 
+        # --- Status label ---
+        self.status_label = ctk.CTkLabel(main_frame, text="Ready", fg_color="gray15")
+        self.status_label.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+
         # --- Control panel ---
         ctrl_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        ctrl_frame.pack(fill="x", pady=20)
+        ctrl_frame.grid(row=3, column=0, sticky="ew", pady=20)
         self.start_btn = ctk.CTkButton(
             ctrl_frame,
             text="Start Experiment",
             fg_color="green",
             hover_color="darkgreen",
             command=self.start_experiment,
+            width=200,
             height=45,
             font=("Segoe UI", 16, "bold"),
         )
-        self.start_btn.pack(side="left", padx=20)
+        self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 10))
         self.stop_btn = ctk.CTkButton(
             ctrl_frame,
             text="Stop Experiment",
@@ -525,13 +446,11 @@ class MasterDashboard:
             hover_color="darkred",
             state="disabled",
             command=self.stop_experiment,
+            width=200,
             height=45,
             font=("Segoe UI", 16, "bold"),
         )
-        self.stop_btn.pack(side="left")
-
-        self.status_label = ctk.CTkLabel(self.root, text="Ready", fg_color="gray15")
-        self.status_label.pack(side="bottom", fill="x")
+        self.stop_btn.pack(side="right", expand=True, fill="x", padx=(10, 0))
 
     # ------------------------------------------------------------------
     # Metric row helper
@@ -643,18 +562,6 @@ class MasterDashboard:
             exec_var.trace_add("write", self._on_exec_mode_change)
             self._on_exec_mode_change()
 
-        # Rebuild sync rows from paradigm channels
-        for r in self._sync_rows:
-            r.destroy()
-        self._sync_rows.clear()
-
-        channels = p_cls.get_sync_channels()
-        for i, ch in enumerate(channels):
-            sync_row = _SyncBlockRow(
-                self._sync_list_frame, i, ch, on_delete=self._delete_sync_row
-            )
-            self._sync_rows.append(sync_row)
-
     # ------------------------------------------------------------------
     # Execution mode toggle
     # ------------------------------------------------------------------
@@ -672,7 +579,7 @@ class MasterDashboard:
                 self._session_total_entry.pack(side="left")
 
     # ------------------------------------------------------------------
-    # Sync block topology
+    # File browser helper
     # ------------------------------------------------------------------
     def _browse_file(self, var: ctk.StringVar):
         from tkinter import filedialog
@@ -680,21 +587,6 @@ class MasterDashboard:
         path = filedialog.askopenfilename()
         if path:
             var.set(path)
-
-    def _add_sync_block(self):
-        idx = len(self._sync_rows)
-        sync_row = _SyncBlockRow(
-            self._sync_list_frame, idx, "", on_delete=self._delete_sync_row
-        )
-        self._sync_rows.append(sync_row)
-
-    def _delete_sync_row(self, row: _SyncBlockRow):
-        if row in self._sync_rows:
-            self._sync_rows.remove(row)
-            row.destroy()
-
-    def _get_sync_topology(self) -> List[Dict[str, Any]]:
-        return [row.get_topology(i) for i, row in enumerate(self._sync_rows)]
 
     # ------------------------------------------------------------------
     # Default config / helpers
@@ -784,7 +676,7 @@ class MasterDashboard:
             "Screen Width (cm)": self._safe_float(self.screen_width_cm_var.get(), 53.0),
             "Screen Width (px)": screen_w_px,
             "Screen Height (px)": screen_h_px,
-            "Sync Topology": self._get_sync_topology(),
+            "Sync Topology": [],
             "_output_dir": out_dir,
         }
         cfg.update(paradigm_params)
@@ -798,10 +690,10 @@ class MasterDashboard:
             q = getattr(self, q_name, None)
             if q is not None:
                 try:
-                    while True:
-                        q.get_nowait()
-                except (queue.Empty, ValueError, OSError):
+                    q.cancel_join_thread()
+                except Exception:
                     pass
+                self._drain_queue_async(q)
                 try:
                     q.close()
                 except Exception:
@@ -813,19 +705,46 @@ class MasterDashboard:
             q = getattr(self, q_name, None)
             if q is not None:
                 try:
-                    while True:
-                        q.get_nowait()
-                except (queue.Empty, ValueError, OSError):
+                    q.cancel_join_thread()
+                except Exception:
                     pass
+                self._drain_queue_async(q)
                 try:
                     q.close()
                 except Exception:
                     pass
                 setattr(self, q_name, None)
 
+    @staticmethod
+    def _drain_queue_async(q: mp.Queue):
+        """Drain a queue in a daemon thread to avoid blocking the GUI."""
+
+        def _drain():
+            for _ in range(4096):
+                try:
+                    q.get_nowait()
+                except (queue.Empty, ValueError, OSError):
+                    break
+
+        t = threading.Thread(target=_drain, daemon=True)
+        t.start()
+
     def _kill_worker(self, proc: Optional[mp.Process], timeout: float = 4.0):
         if proc is None:
             return
+        # Cancel join threads on all queues before terminating to prevent deadlock
+        for q_attr in (
+            "cmd_queue",
+            "telemetry_queue",
+            "calib_cmd_queue",
+            "calib_telemetry_queue",
+        ):
+            q = getattr(self, q_attr, None)
+            if q is not None:
+                try:
+                    q.cancel_join_thread()
+                except Exception:
+                    pass
         proc.join(timeout=timeout)
         if proc.is_alive():
             proc.terminate()

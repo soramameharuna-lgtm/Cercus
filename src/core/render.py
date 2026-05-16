@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any
 import numpy as np
 
 
@@ -105,7 +105,7 @@ class CoreRenderer:
 class ScreenEnvironment:
     """Manages 4 fixed sync blocks at screen bottom-left and bottom-right."""
 
-    def __init__(self, win, sync_topology: List[Dict[str, Any]]):
+    def __init__(self, win, sync_topology: list):
         self.win = win
         from psychopy import visual
 
@@ -116,8 +116,9 @@ class ScreenEnvironment:
         margin = 10
 
         self._frame_counter = 0
+        self._sync_blocks: list[visual.Rect] = []
 
-        self._sync_blocks: List[visual.Rect] = []
+        # 强制物理坐标：左外、左内、右内、右外
         positions = [
             (-half_w + margin + w / 2, -half_h + margin + h / 2),
             (-half_w + margin + w * 1.5 + margin, -half_h + margin + h / 2),
@@ -126,23 +127,19 @@ class ScreenEnvironment:
         ]
         for pos in positions:
             sb = visual.Rect(
-                win,
-                width=w,
-                height=h,
-                pos=pos,
-                fillColor=[-1, -1, -1],
-                lineColor=[-1, -1, -1],
-                colorSpace="rgb",
+                win, width=w, height=h, pos=pos,
+                fillColor=[-1, -1, -1], lineColor=[-1, -1, -1], colorSpace="rgb"
             )
             self._sync_blocks.append(sb)
 
-    def render(self, sync_states: List[int]):
+    def render(self, sync_states: list[int]):
         self._frame_counter += 1
         odd = self._frame_counter % 2 == 1
         trial_active = sync_states[0] if len(sync_states) > 0 else 0
 
         off = [-1, -1, -1]
         on = [1, 1, 1]
+
         outer_color = on if (trial_active and odd) else off
         inner_color = on if trial_active else off
 
