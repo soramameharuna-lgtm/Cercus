@@ -37,6 +37,8 @@ class CalibrationWorker:
         STATE_CALIB_Z: 2,
     }
 
+    NOISE_THRESHOLD = 2  # deadband: raw deltas below this are treated as zero
+
     def __init__(self, config: Dict[str, Any], cmd_q: mp.Queue, telemetry_q: mp.Queue):
         self.config = config
         self.cmd_queue = cmd_q
@@ -48,6 +50,7 @@ class CalibrationWorker:
         self._raw_dz = 0
         self._target_mm = 0.0
         self._axis_label = ""
+        self._hw_daemon = None
 
     def _push(self, frame: dict):
         try:
@@ -72,6 +75,9 @@ class CalibrationWorker:
                     self._raw_dx = 0
                     self._raw_dy = 0
                     self._raw_dz = 0
+                    # Flush stale serial data so old frames don't pollute this run
+                    if self._hw_daemon and hasattr(self._hw_daemon, "flush_input"):
+                        self._hw_daemon.flush_input()
                 elif action == "STOP_AXIS":
                     if self._state != self.STATE_IDLE:
                         self._push({
@@ -97,6 +103,7 @@ class CalibrationWorker:
             else:
                 hw_daemon = SerialDaemon(sp)
                 hw_daemon.start(time_func=clock)
+            self._hw_daemon = hw_daemon
 
             last_push = 0.0
 
@@ -112,17 +119,28 @@ class CalibrationWorker:
                     parts = raw.strip().split(",")
                     if len(parts) >= 4:
                         try:
-                            self._raw_dx += int(parts[1])
+                            dx = int(parts[1])
                         except (ValueError, TypeError):
-                            pass
+                            dx = 0
                         try:
-                            self._raw_dy += int(parts[2])
+                            dy = int(parts[2])
                         except (ValueError, TypeError):
-                            pass
+                            dy = 0
                         try:
-                            self._raw_dz += int(parts[3])
+                            dz = int(parts[3])
                         except (ValueError, TypeError):
-                            pass
+                            dz = 0
+                        # Deadband: suppress sensor noise below threshold
+                        thr = self.NOISE_THRESHOLD
+                        if abs(dx) <= thr:
+                            dx = 0
+                        if abs(dy) <= thr:
+                            dy = 0
+                        if abs(dz) <= thr:
+                            dz = 0
+                        self._raw_dx += dx
+                        self._raw_dy += dy
+                        self._raw_dz += dz
 
                 now = time.monotonic()
                 if now - last_push >= 0.033:

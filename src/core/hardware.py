@@ -208,6 +208,16 @@ class SerialDaemon:
                 break
         return items
 
+    def flush_input(self):
+        """Discard all buffered serial data and pending queue items."""
+        if self._serial and getattr(self._serial, "is_open", False):
+            self._serial.reset_input_buffer()
+        while not self.data_queue.empty():
+            try:
+                self.data_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def is_alive(self) -> bool:
         return self._running
 

@@ -177,8 +177,36 @@ class LoomingParadigm(BaseParadigm):
             "Execution Mode": {
                 "type": "choice",
                 "default": "Auto",
-                "choices": ["Auto", "Manual"],
+                "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
+            },
+            "Trigger Dist (mm)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.0,
+                "max": 9999.0,
+                "label": "Trigger Dist (mm)",
+            },
+            "Trigger Angle (°)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.0,
+                "max": 360.0,
+                "label": "Trigger Angle (°)",
+            },
+            "Trigger Speed (units/s)": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 99999.0,
+                "label": "Trigger Speed (units/s)",
+            },
+            "Trigger Duration (ms)": {
+                "type": "float",
+                "default": 500.0,
+                "min": 0.0,
+                "max": 60000.0,
+                "label": "Trigger Duration (ms)",
             },
             "note": {
                 "type": "info",
@@ -467,8 +495,36 @@ class ClassicLoomingParadigm(BaseParadigm):
             "Execution Mode": {
                 "type": "choice",
                 "default": "Auto",
-                "choices": ["Auto", "Manual"],
+                "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
+            },
+            "Trigger Dist (mm)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.0,
+                "max": 9999.0,
+                "label": "Trigger Dist (mm)",
+            },
+            "Trigger Angle (°)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.0,
+                "max": 360.0,
+                "label": "Trigger Angle (°)",
+            },
+            "Trigger Speed (units/s)": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 99999.0,
+                "label": "Trigger Speed (units/s)",
+            },
+            "Trigger Duration (ms)": {
+                "type": "float",
+                "default": 500.0,
+                "min": 0.0,
+                "max": 60000.0,
+                "label": "Trigger Duration (ms)",
             },
         }
 
@@ -741,8 +797,36 @@ class OpticFlowParadigm(BaseParadigm):
             "Execution Mode": {
                 "type": "choice",
                 "default": "Auto",
-                "choices": ["Auto", "Manual"],
+                "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
+            },
+            "Trigger Dist (mm)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.0,
+                "max": 9999.0,
+                "label": "Trigger Dist (mm)",
+            },
+            "Trigger Angle (°)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.0,
+                "max": 360.0,
+                "label": "Trigger Angle (°)",
+            },
+            "Trigger Speed (units/s)": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 99999.0,
+                "label": "Trigger Speed (units/s)",
+            },
+            "Trigger Duration (ms)": {
+                "type": "float",
+                "default": 500.0,
+                "min": 0.0,
+                "max": 60000.0,
+                "label": "Trigger Duration (ms)",
             },
             "Random Seed": {
                 "type": "string",
@@ -1025,8 +1109,36 @@ class MovementTraceParadigm(BaseParadigm):
             "Execution Mode": {
                 "type": "choice",
                 "default": "Auto",
-                "choices": ["Auto", "Manual"],
+                "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
+            },
+            "Trigger Dist (mm)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.0,
+                "max": 9999.0,
+                "label": "Trigger Dist (mm)",
+            },
+            "Trigger Angle (°)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.0,
+                "max": 360.0,
+                "label": "Trigger Angle (°)",
+            },
+            "Trigger Speed (units/s)": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 99999.0,
+                "label": "Trigger Speed (units/s)",
+            },
+            "Trigger Duration (ms)": {
+                "type": "float",
+                "default": 500.0,
+                "min": 0.0,
+                "max": 60000.0,
+                "label": "Trigger Duration (ms)",
             },
         }
 
@@ -1148,6 +1260,145 @@ class MovementTraceParadigm(BaseParadigm):
 
 
 # ---------------------------------------------------------------------------
+# Blank Paradigm (No stimulus, hardware tracking only)
+# ---------------------------------------------------------------------------
+
+
+class BlankParadigm(BaseParadigm):
+    EXPERIMENT_PATTERNS = {
+        "Blank Tracking (No Stimulus)": "blank_tracking",
+    }
+
+    def __init__(self, debug_mode: bool = False, config: dict = None):
+        self.config = config or {}
+        self.trial_duration = float(
+            self.config.get(
+                "Trial Duration (s)", self._schema_default("Trial Duration (s)")
+            )
+        )
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 3840))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+
+        if debug_mode:
+            self.screen_w = float(screen_w_px // 3)
+            self.screen_h = float(screen_h_px // 2)
+        else:
+            self.screen_w = float(screen_w_px)
+            self.screen_h = float(screen_h_px)
+
+    @classmethod
+    def get_available_patterns(cls) -> List[str]:
+        return list(cls.EXPERIMENT_PATTERNS.keys())
+
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "Trial Duration (s)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.1,
+                "max": 600.0,
+                "label": "Trial Duration (s)",
+            },
+            "Number of Trials": {
+                "type": "int",
+                "default": 5,
+                "min": 1,
+                "max": 9999,
+                "label": "Number of Trials",
+            },
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual", "Kinematic"],
+                "label": "Execution Mode",
+            },
+            "Trigger Dist (mm)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.0,
+                "max": 9999.0,
+                "label": "Trigger Dist (mm)",
+            },
+            "Trigger Angle (°)": {
+                "type": "float",
+                "default": 10.0,
+                "min": 0.0,
+                "max": 360.0,
+                "label": "Trigger Angle (°)",
+            },
+            "Trigger Speed (units/s)": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 99999.0,
+                "label": "Trigger Speed (units/s)",
+            },
+            "Trigger Duration (ms)": {
+                "type": "float",
+                "default": 500.0,
+                "min": 0.0,
+                "max": 60000.0,
+                "label": "Trigger Duration (ms)",
+            },
+        }
+
+    def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
+        n = int(
+            self.config.get(
+                "Number of Trials", self._schema_default("Number of Trials")
+            )
+        )
+        return [
+            {"type": "blank_tracking", "trial_idx": i, "trial_duration": self.trial_duration}
+            for i in range(n)
+        ]
+
+    def prepare_trial(self, trial_context: dict) -> str:
+        return ""
+
+    def _build_blank_bg(self) -> dict:
+        return {
+            "id": "_bg",
+            "type": "rect",
+            "width": self.screen_w,
+            "height": self.screen_h,
+            "pos": (0, 0),
+            "fillColor": [0, 0, 0],
+            "lineColor": [0, 0, 0],
+        }
+
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+        tel = {
+            "phase": "Idle",
+            "hw_cmd": None,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                **hw_telemetry,
+            },
+            "ui_twin": None,
+        }
+        return [self._build_blank_bg()], tel, [0, 0]
+
+    def process_frame(
+        self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
+        is_done = elapsed_time >= trial_context["trial_duration"]
+
+        tel = {
+            "phase": "Blank",
+            "hw_cmd": None,
+            "ui_color": "lime",
+            "ui_metrics": {
+                **hw_telemetry,
+            },
+            "ui_twin": None,
+        }
+        return is_done, [self._build_blank_bg()], tel, [0, 0]
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -1156,6 +1407,7 @@ PARADIGM_REGISTRY: Dict[str, type] = {
     "ClassicLooming": ClassicLoomingParadigm,
     "OpticFlow": OpticFlowParadigm,
     "MovementTrace": MovementTraceParadigm,
+    "Blank": BlankParadigm,
 }
 
 

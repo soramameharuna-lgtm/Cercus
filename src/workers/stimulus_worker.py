@@ -7,6 +7,7 @@ import numpy
 from typing import Dict, Any, List
 
 from src.core.hardware import SerialDaemon, MockSerialDaemon, KinematicsParser
+from src.core.kinematics import KinematicEngine
 from src.core.logger import GroundTruthLogger
 from src.core.render import CoreRenderer, ScreenEnvironment
 from src.models.paradigm import PARADIGM_REGISTRY
@@ -21,10 +22,14 @@ def _term_handler(signum, frame):
 
 
 def worker_entry(config, cmd_q, telemetry_q):
+    import sys
     signal.signal(signal.SIGTERM, _term_handler)
     signal.signal(signal.SIGINT, _term_handler)
 
-    GenericWorker(config, cmd_q, telemetry_q).run()
+    try:
+        GenericWorker(config, cmd_q, telemetry_q).run()
+    finally:
+        sys.exit(0)
 
 
 class ExperimentAbort(Exception):
@@ -59,6 +64,10 @@ class GenericWorker:
         self._last_telemetry_push = 0.0
         self._telemetry_interval = 0.03  # 30ms downsampling interval
 
+        self.kinematic_engine = KinematicEngine(
+            error_callback=self._kinematic_error_handler
+        )
+
     def _push(self, frame: dict, force: bool = False):
         try:
             if force:
@@ -90,18 +99,21 @@ class GenericWorker:
             self.abort_flag = True
 
         if self.abort_flag:
-            raise ExperimentAbort()
+            raise ExperimentAbort("Received abort command")
 
         try:
             while not self.cmd_queue.empty():
                 cmd = self.cmd_queue.get_nowait()
                 if cmd.get("action") in ("ABORT", "POISON_PILL"):
                     self.abort_flag = True
-                    raise ExperimentAbort()
+                    break
         except queue.Empty:
             pass
 
-    def _drain_hardware(self, logger: GroundTruthLogger, hw_daemon) -> dict:
+        if self.abort_flag:
+            raise ExperimentAbort("Received abort command")
+
+    def _drain_hardware(self, logger, hw_daemon) -> dict:
         items = hw_daemon.drain_queue()
         if items:
             if logger and logger.is_open():
@@ -114,9 +126,34 @@ class GenericWorker:
                     logger.log_kinematics_batch(kin_rows)
                 if logger.kin_buffer_size() > 10000:
                     logger.flush_kinematics()
-            tel = self.parser.get_telemetry(items[-1][1])
-            self._last_tel_data = tel
-        return self._last_tel_data
+
+            for sys_t, raw in items:
+                tel = self.parser.get_telemetry(raw)
+                self.kinematic_engine.update(
+                    float(sys_t),
+                    float(tel.get("dx", 0.0)),
+                    float(tel.get("dy", 0.0)),
+                    float(tel.get("dz", 0.0)),
+                )
+
+            self._last_tel_data = self.parser.get_telemetry(items[-1][1])
+
+        return self._inject_kinematics(self._last_tel_data)
+
+    def _kinematic_error_handler(self, err_type: str, msg: str, data: object):
+        pass
+
+    def _inject_kinematics(self, hw_tel: dict) -> dict:
+        eng = self.kinematic_engine
+        return {
+            **hw_tel,
+            "k_angle": round(eng.cum_dz, 2),
+            "k_turn_speed": round(eng.turn_speed, 2),
+            "k_move_speed": round(eng.move_speed, 2),
+            "k_disp": round(eng.cum_disp, 2),
+            "pos_x": round(getattr(eng, "pos_x", 0.0), 2),
+            "pos_y": round(getattr(eng, "pos_y", 0.0), 2),
+        }
 
     @staticmethod
     def _sanitize_metrics(metrics: dict) -> dict:
@@ -139,7 +176,8 @@ class GenericWorker:
         return sanitized
 
     def _build_telemetry(
-        self, session_num: int, trial_idx: int, total_trials: int, data: dict
+        self, session_num: int, trial_idx: int, total_trials: int, data: dict,
+        hw_tel: dict = None,
     ) -> dict:
         payload = {
             "action": "telemetry",
@@ -147,8 +185,12 @@ class GenericWorker:
             "trial_idx": trial_idx,
             "total_trials": total_trials,
         }
-        if "ui_metrics" in data:
-            data = {**data, "ui_metrics": self._sanitize_metrics(data["ui_metrics"])}
+        ui_metrics = data.get("ui_metrics", {})
+        if hw_tel:
+            for key in ("k_angle", "k_turn_speed", "k_move_speed", "k_disp", "pos_x", "pos_y"):
+                if key in hw_tel:
+                    ui_metrics[key] = hw_tel[key]
+        data = {**data, "ui_metrics": self._sanitize_metrics(ui_metrics)}
         payload.update(data)
         return payload
 
@@ -203,6 +245,7 @@ class GenericWorker:
             env = ScreenEnvironment(renderer.win, sync_topology)
 
             # --- Adaptation ---
+            self.kinematic_engine.reset()
             t0 = clock.getTime()
             while clock.getTime() - t0 < 5.0:
                 self._sync_state()
@@ -213,14 +256,17 @@ class GenericWorker:
                 tel["phase"] = "Adaptation"
                 tel["ui_color"] = "#ff4d4d"
                 self._present(renderer, env, cmds, sync_states)
-                self._push(self._build_telemetry(0, 0, 0, tel))
+                self._push(self._build_telemetry(0, 0, 0, tel, hw_tel=hw_tel))
             logger.flush_kinematics()
 
             # --- Auto-start wait ---
-            if self.config.get("Execution Mode") == "Auto":
+            if self.config.get("Execution Mode") in ("Auto", "Kinematic"):
+                self.kinematic_engine.reset()
                 self.event.clearEvents()
                 while True:
                     self._sync_state(clear_keys=False)
+                    if self.abort_flag:
+                        raise ExperimentAbort("Aborted during wait phase")
                     hw_tel = self._drain_hardware(logger, hw_daemon)
                     if hw_daemon and not hw_daemon.is_alive():
                         raise HardwareDisconnectError("Serial daemon died")
@@ -228,7 +274,7 @@ class GenericWorker:
                     tel["phase"] = "WAIT [SPACE] (Auto Start)"
                     tel["ui_color"] = "orange"
                     self._present(renderer, env, cmds, sync_states)
-                    self._push(self._build_telemetry(0, 0, 0, tel))
+                    self._push(self._build_telemetry(0, 0, 0, tel, hw_tel=hw_tel))
 
                     all_keys = self.event.getKeys()
                     keys = [k for k in all_keys if k in ["space", "escape"]]
@@ -269,6 +315,7 @@ class GenericWorker:
                         if dur <= 0:
                             pass
                         else:
+                            self.kinematic_engine.reset()
                             t_iti = clock.getTime()
                             logger.log_event("iti_start", t_iti, duration=dur)
                             while clock.getTime() - t_iti < dur:
@@ -284,15 +331,19 @@ class GenericWorker:
                                 self._present(renderer, env, cmds, sync_states)
                                 self._push(
                                     self._build_telemetry(
-                                        current_session, t_idx, len(trials), tel
+                                        current_session, t_idx, len(trials), tel,
+                                        hw_tel=hw_tel,
                                     )
                                 )
 
                     # --- Manual wait ---
                     if self.config.get("Execution Mode") == "Manual":
+                        self.kinematic_engine.reset()
                         self.event.clearEvents()
                         while True:
                             self._sync_state(clear_keys=False)
+                            if self.abort_flag:
+                                raise ExperimentAbort("Aborted during wait phase")
                             hw_tel = self._drain_hardware(logger, hw_daemon)
                             if hw_daemon and not hw_daemon.is_alive():
                                 raise HardwareDisconnectError("Serial daemon died")
@@ -304,7 +355,8 @@ class GenericWorker:
                             self._present(renderer, env, cmds, sync_states)
                             self._push(
                                 self._build_telemetry(
-                                    current_session, t_idx, len(trials), tel
+                                    current_session, t_idx, len(trials), tel,
+                                    hw_tel=hw_tel,
                                 )
                             )
 
@@ -316,8 +368,49 @@ class GenericWorker:
                             if "space" in keys:
                                 break
 
+                    # --- Kinematic wait ---
+                    if self.config.get("Execution Mode") == "Kinematic":
+                        self.kinematic_engine.reset()
+                        trig_dist = float(self.config.get("Trigger Dist (mm)", 5.0))
+                        trig_angle = float(self.config.get("Trigger Angle (°)", 10.0))
+                        trig_speed = float(self.config.get("Trigger Speed (units/s)", 0.0))
+                        trig_speed_dur = float(self.config.get("Trigger Duration (ms)", 500.0))
+                        while True:
+                            self._sync_state(clear_keys=False)
+                            if self.abort_flag:
+                                raise ExperimentAbort("Aborted during wait phase")
+                            hw_tel = self._drain_hardware(logger, hw_daemon)
+                            if hw_daemon and not hw_daemon.is_alive():
+                                raise HardwareDisconnectError("Serial daemon died")
+                            cmds, tel, sync_states = self.paradigm.get_idle_frame(
+                                hw_tel
+                            )
+                            tel["phase"] = (
+                                f"Kinematic Δ={self.kinematic_engine.cum_disp:.1f}"
+                                f" θ={self.kinematic_engine.cum_dz:.1f}"
+                            )
+                            tel["ui_color"] = "yellow"
+                            self._present(renderer, env, cmds, sync_states)
+                            self._push(
+                                self._build_telemetry(
+                                    current_session, t_idx, len(trials), tel,
+                                    hw_tel=hw_tel,
+                                )
+                            )
+
+                            all_keys = self.event.getKeys()
+                            if "escape" in all_keys:
+                                self.abort_flag = True
+                                raise ExperimentAbort()
+                            if self.kinematic_engine.evaluate_trigger(
+                                trig_dist, trig_angle,
+                                trig_speed, trig_speed_dur,
+                            ):
+                                break
+
                     logger.advance_trial()
                     logger.log_event("trial_start", clock.getTime(), **trial)
+                    self.kinematic_engine.reset()
                     t_trial = clock.getTime()
                     if init_cmd:
                         hw_daemon.send_command(init_cmd)
@@ -342,7 +435,8 @@ class GenericWorker:
                         self._present(renderer, env, cmds, sync_states)
                         self._push(
                             self._build_telemetry(
-                                current_session, t_idx + 1, len(trials), tel
+                                current_session, t_idx + 1, len(trials), tel,
+                                hw_tel=hw_tel,
                             )
                         )
                     logger.flush()
@@ -356,6 +450,7 @@ class GenericWorker:
                     if isi_dur <= 0:
                         pass
                     else:
+                        self.kinematic_engine.reset()
                         t_isi = clock.getTime()
                         while clock.getTime() - t_isi < isi_dur:
                             self._sync_state()
@@ -367,7 +462,7 @@ class GenericWorker:
                             tel["ui_color"] = "orange"
                             self._present(renderer, env, cmds, sync_states)
                             self._push(
-                                self._build_telemetry(current_session, 0, len(trials), tel)
+                                self._build_telemetry(current_session, 0, len(trials), tel, hw_tel=hw_tel)
                             )
                         logger.flush_kinematics()
                 s_idx += 1
@@ -376,23 +471,26 @@ class GenericWorker:
             self._push({"action": "worker_done"}, force=True)
 
         except ExperimentAbort:
-            try:
-                self.telemetry_queue.put({"action": "worker_abort"}, timeout=2.0)
-            except (queue.Full, BrokenPipeError, EOFError, ValueError):
-                pass
+            self._push({"action": "worker_abort"}, force=True)
+            time.sleep(0.1)
         except Exception as e:
             self._push({"action": "worker_error", "error": str(e)}, force=True)
+            time.sleep(0.1)
         finally:
-            # Drain IPC queues to prevent zombie processes on parent crash
+            # 仅清空 cmd_queue，绝对不能清空 telemetry_queue 以免吞掉发出的终端信号
+            if self.cmd_queue:
+                try:
+                    while not self.cmd_queue.empty():
+                        self.cmd_queue.get_nowait()
+                except Exception:
+                    pass
+
+            # 取消底层 pipe 的阻塞等待
             for q in (self.cmd_queue, self.telemetry_queue):
                 try:
-                    while not q.empty():
-                        try:
-                            q.get_nowait()
-                        except queue.Empty:
-                            break
-                    q.cancel_join_thread()
-                except (OSError, ValueError, AttributeError):
+                    if q is not None:
+                        q.cancel_join_thread()
+                except Exception:
                     pass
 
             if hw_daemon:

@@ -81,18 +81,18 @@ class CalibrationPanel:
         # Per-axis results: {"X": {"target_mm": float, "raw_vector": [int,int,int]}, ...}
         self.axis_results: Dict[str, dict] = {}
 
-        self.frame = ctk.CTkFrame(parent)
-        self.frame.pack(fill="x", padx=6, pady=(6, 0))
+        self.frame = ctk.CTkScrollableFrame(parent, fg_color="transparent", width=400)
+        self.frame.pack(fill="both", expand=True, padx=6, pady=(2, 0))
 
         header = ctk.CTkFrame(self.frame, fg_color="transparent")
-        header.pack(fill="x", padx=6, pady=(6, 2))
+        header.pack(fill="x", padx=6, pady=(2, 2))
         ctk.CTkLabel(
             header, text="Physical Calibration", font=("Segoe UI", 13, "bold")
         ).pack(side="left")
 
         # --- Geometry inputs ---
         geo_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
-        geo_frame.pack(fill="x", padx=6, pady=(0, 4))
+        geo_frame.pack(fill="x", padx=6, pady=(0, 2))
         ctk.CTkLabel(geo_frame, text="Radius (mm):").pack(side="left")
         self.radius_var = ctk.StringVar(value="100.0")
         ctk.CTkEntry(geo_frame, textvariable=self.radius_var, width=70).pack(
@@ -111,7 +111,7 @@ class CalibrationPanel:
             text_color="orange",
             font=("Segoe UI", 10),
             justify="left",
-        ).pack(fill="x", padx=6, pady=(0, 4))
+        ).pack(fill="x", padx=6, pady=(0, 2))
 
         # --- Enter / Exit calibration ---
         self.toggle_btn = ctk.CTkButton(
@@ -121,32 +121,33 @@ class CalibrationPanel:
             hover_color="#144870",
             command=self._on_toggle,
         )
-        self.toggle_btn.pack(fill="x", padx=6, pady=(0, 4))
+        self.toggle_btn.pack(fill="x", padx=6, pady=(0, 2))
 
         # --- Axis buttons ---
         axis_row = ctk.CTkFrame(self.frame, fg_color="transparent")
-        axis_row.pack(fill="x", padx=6, pady=2)
+        axis_row.pack(fill="x", padx=6, pady=(0, 2))
+        axis_row.grid_columnconfigure((0, 1, 2), weight=1)
         self.btn_cal_x = ctk.CTkButton(
-            axis_row, text="Calibrate X", width=90,
+            axis_row, text="Calibrate X",
             fg_color="#1f6aa5", hover_color="#144870",
             command=lambda: self._on_start_axis("X"),
             state="disabled",
         )
-        self.btn_cal_x.pack(side="left", padx=(0, 4))
+        self.btn_cal_x.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.btn_cal_y = ctk.CTkButton(
-            axis_row, text="Calibrate Y", width=90,
+            axis_row, text="Calibrate Y",
             fg_color="#1f6aa5", hover_color="#144870",
             command=lambda: self._on_start_axis("Y"),
             state="disabled",
         )
-        self.btn_cal_y.pack(side="left", padx=(0, 4))
+        self.btn_cal_y.grid(row=0, column=1, sticky="ew", padx=(0, 4))
         self.btn_cal_z = ctk.CTkButton(
-            axis_row, text="Calibrate Z", width=90,
+            axis_row, text="Calibrate Z",
             fg_color="#1f6aa5", hover_color="#144870",
             command=lambda: self._on_start_axis("Z"),
             state="disabled",
         )
-        self.btn_cal_z.pack(side="left")
+        self.btn_cal_z.grid(row=0, column=2, sticky="ew", padx=(0, 0))
 
         # --- Stop axis button ---
         self.stop_axis_btn = ctk.CTkButton(
@@ -156,23 +157,25 @@ class CalibrationPanel:
             command=self._on_stop_axis,
             state="disabled",
         )
-        self.stop_axis_btn.pack(fill="x", padx=6, pady=(0, 4))
+        self.stop_axis_btn.pack(fill="x", padx=6, pady=(0, 2))
 
-        # --- Raw vector display ---
-        self.lbl_dx = ctk.CTkLabel(self.frame, text="Raw DX: 0", font=("Segoe UI", 12))
-        self.lbl_dx.pack(padx=6, anchor="w")
-        self.lbl_dy = ctk.CTkLabel(self.frame, text="Raw DY: 0", font=("Segoe UI", 12))
-        self.lbl_dy.pack(padx=6, anchor="w")
-        self.lbl_dz = ctk.CTkLabel(self.frame, text="Raw DZ: 0", font=("Segoe UI", 12))
-        self.lbl_dz.pack(padx=6, anchor="w")
+        # --- Raw vector + Axis result labels (3x2 grid) ---
+        self.results_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        self.results_frame.pack(fill="x", padx=6, pady=(0, 2))
 
-        # --- Axis result labels ---
-        self.lbl_result_x = ctk.CTkLabel(self.frame, text="X: --", font=("Segoe UI", 11))
-        self.lbl_result_x.pack(padx=6, anchor="w")
-        self.lbl_result_y = ctk.CTkLabel(self.frame, text="Y: --", font=("Segoe UI", 11))
-        self.lbl_result_y.pack(padx=6, anchor="w")
-        self.lbl_result_z = ctk.CTkLabel(self.frame, text="Z: --", font=("Segoe UI", 11))
-        self.lbl_result_z.pack(padx=6, anchor="w")
+        self.lbl_dx = ctk.CTkLabel(self.results_frame, text="Raw DX: 0", font=("Segoe UI", 12))
+        self.lbl_dx.grid(row=0, column=0, sticky="w", padx=(0, 20))
+        self.lbl_dy = ctk.CTkLabel(self.results_frame, text="Raw DY: 0", font=("Segoe UI", 12))
+        self.lbl_dy.grid(row=1, column=0, sticky="w", padx=(0, 20))
+        self.lbl_dz = ctk.CTkLabel(self.results_frame, text="Raw DZ: 0", font=("Segoe UI", 12))
+        self.lbl_dz.grid(row=2, column=0, sticky="w", padx=(0, 20))
+
+        self.lbl_result_x = ctk.CTkLabel(self.results_frame, text="X: --", font=("Segoe UI", 11))
+        self.lbl_result_x.grid(row=0, column=1, sticky="w")
+        self.lbl_result_y = ctk.CTkLabel(self.results_frame, text="Y: --", font=("Segoe UI", 11))
+        self.lbl_result_y.grid(row=1, column=1, sticky="w")
+        self.lbl_result_z = ctk.CTkLabel(self.results_frame, text="Z: --", font=("Segoe UI", 11))
+        self.lbl_result_z.grid(row=2, column=1, sticky="w")
 
         # --- Apply Matrix ---
         self.apply_btn = ctk.CTkButton(
@@ -182,16 +185,16 @@ class CalibrationPanel:
             command=self._on_apply,
             state="disabled",
         )
-        self.apply_btn.pack(fill="x", padx=6, pady=(4, 6))
+        self.apply_btn.pack(fill="x", padx=6, pady=(2, 2))
 
         # --- Manual 3x3 Matrix Grid ---
         ctk.CTkLabel(
             self.frame, text="Manual Calibration Matrix",
             font=("Segoe UI", 11, "bold"),
-        ).pack(fill="x", padx=6, pady=(4, 2))
+        ).pack(fill="x", padx=6, pady=(2, 2))
 
         grid_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
-        grid_frame.pack(padx=6, pady=(0, 4))
+        grid_frame.pack(padx=6, pady=(0, 2))
 
         self._matrix_vars: List[List[ctk.StringVar]] = []
         for r in range(3):
@@ -212,12 +215,12 @@ class CalibrationPanel:
             fg_color="#6b5b95", hover_color="#4a3f6b",
             command=self._on_manual_save,
         )
-        self.manual_save_btn.pack(fill="x", padx=6, pady=(0, 6))
+        self.manual_save_btn.pack(fill="x", padx=6, pady=(0, 2))
 
         self.status_lbl = ctk.CTkLabel(
             self.frame, text="Idle", text_color="gray", font=("Segoe UI", 11)
         )
-        self.status_lbl.pack(padx=6, pady=(0, 6))
+        self.status_lbl.pack(padx=6, pady=(0, 2))
 
     # ---- public API for MasterDashboard ----
 
@@ -465,6 +468,14 @@ class MasterDashboard:
         self._param_vars: Dict[str, ctk.StringVar] = {}
         self._param_widgets: List[ctk.CTkBaseClass] = []
         self._exit_attempts: int = 0
+
+        # Trajectory panel state
+        self._trail_points: List[tuple] = []
+        self._trail_last_phase: str = ""
+        self._trail_min_x: float = 0.0
+        self._trail_max_x: float = 0.0
+        self._trail_min_y: float = 0.0
+        self._trail_max_y: float = 0.0
         self._create_widgets()
         self._load_default_config()
         self._on_paradigm_change()
@@ -637,12 +648,11 @@ class MasterDashboard:
             row=8, column=0, columnspan=4, sticky="nsew", padx=10, pady=(5, 10)
         )
         cfg_frame.grid_rowconfigure(8, weight=1)
-        cfg_frame.grid_columnconfigure(0, weight=1)
+        cfg_frame.grid_columnconfigure(4, weight=1)
 
         # --- Right: Calibration Panel ---
-        right_panel = ctk.CTkFrame(top_row, width=340)
+        right_panel = ctk.CTkFrame(top_row, width=400)
         right_panel.pack(side="right", fill="y", padx=(5, 0))
-        right_panel.pack_propagate(False)
 
         # --- Calibration Panel ---
         self._calib_panel = CalibrationPanel(right_panel)
@@ -660,7 +670,8 @@ class MasterDashboard:
         )
         status_frame.grid(row=1, column=0, sticky="ew", pady=10, padx=5)
         status_frame.grid_columnconfigure(0, weight=1)
-        status_frame.grid_columnconfigure(1, weight=1)
+        status_frame.grid_columnconfigure(1, weight=0)
+        status_frame.grid_columnconfigure(2, weight=0)
 
         metrics_frame = ctk.CTkFrame(status_frame, fg_color="transparent")
         metrics_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=15)
@@ -673,6 +684,7 @@ class MasterDashboard:
         self.lbl_hw_val = self._add_metric_row(
             metrics_frame, "Hardware State:", 3, color="cyan"
         )
+        self.lbl_hw_val.configure(justify="left")
 
         twin_frame = ctk.CTkFrame(status_frame, fg_color="transparent")
         twin_frame.grid(row=0, column=1, sticky="e", padx=20, pady=15)
@@ -685,6 +697,45 @@ class MasterDashboard:
             highlightbackground="#333333",
         )
         self.canvas.pack()
+
+        # --- Trajectory panel (always visible) ---
+        self._traj_frame = ctk.CTkFrame(status_frame, fg_color="transparent")
+        self._traj_frame.grid(row=0, column=2, sticky="e", padx=(0, 20), pady=15)
+
+        ctk.CTkLabel(
+            self._traj_frame,
+            text="Trajectory",
+            font=("Segoe UI", 12, "bold"),
+            text_color="gray70",
+        ).pack(anchor="w")
+
+        self._traj_canvas = ctk.CTkCanvas(
+            self._traj_frame,
+            width=150,
+            height=150,
+            bg="black",
+            highlightthickness=1,
+            highlightbackground="#333333",
+        )
+        self._traj_canvas.pack(pady=(2, 4))
+
+        self._kin_row = ctk.CTkFrame(self._traj_frame, fg_color="transparent")
+        self._kin_row.pack(fill="x")
+
+        self._lbl_kin_angle = ctk.CTkLabel(
+            self._kin_row, text="θ: —", font=("Consolas", 11), text_color="cyan", width=90
+        )
+        self._lbl_kin_angle.pack(side="left")
+
+        self._lbl_kin_turn = ctk.CTkLabel(
+            self._kin_row, text="ω: —", font=("Consolas", 11), text_color="lime", width=90
+        )
+        self._lbl_kin_turn.pack(side="left")
+
+        self._lbl_kin_disp = ctk.CTkLabel(
+            self._kin_row, text="D: —", font=("Consolas", 11), text_color="orange", width=90
+        )
+        self._lbl_kin_disp.pack(side="left")
 
         # --- Status label ---
         self.status_label = ctk.CTkLabel(main_frame, text="Ready", fg_color="gray15")
@@ -753,6 +804,7 @@ class MasterDashboard:
             w.destroy()
         self._param_widgets.clear()
         self._param_vars.clear()
+        self._param_frame.grid_columnconfigure(2, weight=1)
 
         schema = p_cls.get_parameter_schema()
         if schema:
@@ -832,7 +884,10 @@ class MasterDashboard:
     # ------------------------------------------------------------------
     def _on_exec_mode_change(self, *args):
         if "Execution Mode" not in self._param_vars:
+            self._session_sep_label.pack_forget()
+            self._session_total_entry.pack_forget()
             return
+
         mode = self._param_vars["Execution Mode"].get()
         if mode == "Manual":
             self._session_sep_label.pack_forget()
@@ -842,6 +897,7 @@ class MasterDashboard:
                 self._session_sep_label.pack(side="left")
             if not self._session_total_entry.winfo_ismapped():
                 self._session_total_entry.pack(side="left")
+
 
     # ------------------------------------------------------------------
     # File browser helper
@@ -1166,6 +1222,8 @@ class MasterDashboard:
         if self.cmd_queue:
             try:
                 self.cmd_queue.put_nowait({"action": "POISON_PILL"})
+                self.stop_btn.configure(state="disabled")
+                self.status_label.configure(text="Stopping...", text_color="orange")
             except queue.Full:
                 pass
 
@@ -1281,11 +1339,14 @@ class MasterDashboard:
         self.lbl_trial_val.configure(text=f"{t_idx} / {tot}")
 
         hw_str = (
-            "  ".join(f"{k}:{v}" for k, v in ui_metrics.items())
+            "\n".join(f"{k}: {v}" for k, v in ui_metrics.items())
             if ui_metrics
             else "Active"
         )
         self.lbl_hw_val.configure(text=hw_str, text_color="cyan")
+
+        # Trajectory panel — always active
+        self._update_trajectory(data, ui_metrics)
 
     def _draw_twin(self, frame: Dict[str, Any]):
         self.canvas.delete("all")
@@ -1318,6 +1379,103 @@ class MasterDashboard:
             )
         self.canvas.create_line(200, 0, 200, 150, fill="#333333", dash=(4, 2))
 
+    # ------------------------------------------------------------------
+    # Trajectory panel
+    # ------------------------------------------------------------------
+    def _update_trajectory(self, data: dict, ui_metrics: dict):
+        raw_phase = str(data.get("phase", ""))
+
+        base_phase = raw_phase
+        if raw_phase.startswith("ITI"): base_phase = "ITI"
+        elif raw_phase.startswith("ISI"): base_phase = "ISI"
+        elif raw_phase.startswith("Kinematic"): base_phase = "Kinematic"
+
+        if base_phase != self._trail_last_phase:
+            self._reset_trajectory()
+            self._trail_last_phase = base_phase
+
+        px = ui_metrics.get("pos_x")
+        py = ui_metrics.get("pos_y")
+        if px is not None and py is not None:
+            self._trail_points.append((float(px), float(py)))
+            self._trail_points = self._trail_points[-1000:]
+            if len(self._trail_points) == 1:
+                self._trail_min_x = self._trail_max_x = float(px)
+                self._trail_min_y = self._trail_max_y = float(py)
+            else:
+                if float(px) < self._trail_min_x:
+                    self._trail_min_x = float(px)
+                elif float(px) > self._trail_max_x:
+                    self._trail_max_x = float(px)
+                if float(py) < self._trail_min_y:
+                    self._trail_min_y = float(py)
+                elif float(py) > self._trail_max_y:
+                    self._trail_max_y = float(py)
+            self._draw_trajectory()
+
+        self._lbl_kin_angle.configure(text=f"θ: {ui_metrics.get('k_angle', '—')}")
+        self._lbl_kin_turn.configure(text=f"ω: {ui_metrics.get('k_turn_speed', '—')}")
+        self._lbl_kin_disp.configure(text=f"D: {ui_metrics.get('k_disp', '—')}")
+
+    def _draw_trajectory(self):
+        canvas = self._traj_canvas
+        canvas.delete("all")
+
+        W, H = 150, 150
+        PAD = 10
+
+        n = len(self._trail_points)
+        if n < 2:
+            return
+
+        # Bounding box with 10% margin
+        margin_x = max((self._trail_max_x - self._trail_min_x) * 0.1, 0.5)
+        margin_y = max((self._trail_max_y - self._trail_min_y) * 0.1, 0.5)
+        x0 = self._trail_min_x - margin_x
+        x1 = self._trail_max_x + margin_x
+        y0 = self._trail_min_y - margin_y
+        y1 = self._trail_max_y + margin_y
+
+        # Uniform scale — floor at 10.0 keeps single-point / zero-displacement
+        # centered without division-by-zero or extreme zoom
+        usable_w = W - 2 * PAD
+        usable_h = H - 2 * PAD
+        range_x = max(x1 - x0, 10.0)
+        range_y = max(y1 - y0, 10.0)
+        scale_x = usable_w / range_x
+        scale_y = usable_h / range_y
+        scale = scale_x if scale_x < scale_y else scale_y
+
+        cx_phys = (x0 + x1) * 0.5
+        cy_phys = (y0 + y1) * 0.5
+        cx_canvas = W * 0.5
+        cy_canvas = H * 0.5
+
+        # Build flat coordinate list [x0,y0, x1,y1, ...] for a single
+        # create_line call — O(1) Tk widget creation instead of O(n) loop
+        flat = []
+        for px, py in self._trail_points:
+            flat.append(cx_canvas + (px - cx_phys) * scale)
+            flat.append(cy_canvas - (py - cy_phys) * scale)
+        canvas.create_line(*flat, fill="cyan", width=2)
+
+        # Current position dot
+        lx = flat[-2]
+        ly = flat[-1]
+        canvas.create_oval(lx - 3, ly - 3, lx + 3, ly + 3, fill="white", outline="")
+
+    def _reset_trajectory(self):
+        self._trail_points = []
+        self._trail_last_phase = ""
+        self._trail_min_x = 0.0
+        self._trail_max_x = 0.0
+        self._trail_min_y = 0.0
+        self._trail_max_y = 0.0
+        self._traj_canvas.delete("all")
+        self._lbl_kin_angle.configure(text="θ: —")
+        self._lbl_kin_turn.configure(text="ω: —")
+        self._lbl_kin_disp.configure(text="D: —")
+
     def _reset_ui(self, status: str, color: str):
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
@@ -1326,6 +1484,7 @@ class MasterDashboard:
         self.lbl_phase_val.configure(text="IDLE", text_color="gray")
         self.lbl_hw_val.configure(text="Disconnected", text_color="gray")
         self.canvas.delete("all")
+        self._reset_trajectory()
         self._calib_panel.reset()
         self._calib_panel.set_enabled(True)
 
