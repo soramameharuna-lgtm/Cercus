@@ -99,7 +99,7 @@ class CalibrationPanel:
             side="left", padx=(4, 0)
         )
         ctk.CTkLabel(geo_frame, text="Rotations:").pack(side="left", padx=(10, 0))
-        self.rotations_var = ctk.StringVar(value="3.0")
+        self.rotations_var = ctk.StringVar(value="10.0")
         ctk.CTkEntry(geo_frame, textvariable=self.rotations_var, width=50).pack(
             side="left", padx=(4, 0)
         )
