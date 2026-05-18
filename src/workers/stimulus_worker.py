@@ -67,6 +67,7 @@ class GenericWorker:
         self.kinematic_engine = KinematicEngine(
             error_callback=self._kinematic_error_handler
         )
+        self._sustained_speed_above_since = -1.0
 
     def _push(self, frame: dict, force: bool = False):
         try:
@@ -371,10 +372,14 @@ class GenericWorker:
                     # --- Kinematic wait ---
                     if self.config.get("Execution Mode") == "Kinematic":
                         self.kinematic_engine.reset()
+                        self._sustained_speed_above_since = -1.0
                         trig_dist = float(self.config.get("Trigger Dist (mm)", 5.0))
                         trig_angle = float(self.config.get("Trigger Angle (°)", 10.0))
                         trig_speed = float(self.config.get("Trigger Speed (units/s)", 0.0))
                         trig_speed_dur = float(self.config.get("Trigger Duration (ms)", 500.0))
+                        en_dist = bool(self.config.get("Trigger Dist Enabled", True))
+                        en_angle = bool(self.config.get("Trigger Angle Enabled", True))
+                        en_speed = bool(self.config.get("Trigger Speed Enabled", True))
                         while True:
                             self._sync_state(clear_keys=False)
                             if self.abort_flag:
@@ -388,6 +393,7 @@ class GenericWorker:
                             tel["phase"] = (
                                 f"Kinematic Δ={self.kinematic_engine.cum_disp:.1f}"
                                 f" θ={self.kinematic_engine.cum_dz:.1f}"
+                                f" S={self.kinematic_engine.move_speed:.1f}"
                             )
                             tel["ui_color"] = "yellow"
                             self._present(renderer, env, cmds, sync_states)
@@ -402,10 +408,42 @@ class GenericWorker:
                             if "escape" in all_keys:
                                 self.abort_flag = True
                                 raise ExperimentAbort()
-                            if self.kinematic_engine.evaluate_trigger(
-                                trig_dist, trig_angle,
-                                trig_speed, trig_speed_dur,
-                            ):
+
+                            # AND + short-circuit trigger evaluation
+                            eng = self.kinematic_engine
+                            now_t = eng._last_t if hasattr(eng, '_last_t') else -1.0
+
+                            dist_met = (
+                                (not en_dist)
+                                or trig_dist <= 0.0
+                                or eng.cum_disp >= trig_dist
+                            )
+                            angle_met = (
+                                (not en_angle)
+                                or trig_angle <= 0.0
+                                or abs(eng.cum_dz) >= trig_angle
+                            )
+
+                            # Sustained speed: speed must stay above threshold
+                            # continuously for trig_speed_dur milliseconds
+                            if en_speed and trig_speed > 0.0 and trig_speed_dur > 0.0:
+                                if eng.move_speed < trig_speed:
+                                    self._sustained_speed_above_since = -1.0
+                                elif self._sustained_speed_above_since < 0.0:
+                                    self._sustained_speed_above_since = now_t
+                                speed_met = (
+                                    self._sustained_speed_above_since > 0.0
+                                    and now_t > 0.0
+                                    and (now_t - self._sustained_speed_above_since) * 1000.0
+                                        >= trig_speed_dur
+                                )
+                            elif en_speed and trig_speed > 0.0:
+                                speed_met = eng.move_speed >= trig_speed
+                            else:
+                                speed_met = True
+                                self._sustained_speed_above_since = -1.0
+
+                            if dist_met and angle_met and speed_met:
                                 break
 
                     logger.advance_trial()

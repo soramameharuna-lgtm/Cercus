@@ -146,7 +146,6 @@ class LoomingParadigm(BaseParadigm):
 
         self.init_deg = 2.0
         self.max_deg = 179.0
-        self._wind_triggered = False
         self._baseline_delay = 1.0
         self._baseline_post = 1.5
 
@@ -179,34 +178,6 @@ class LoomingParadigm(BaseParadigm):
                 "default": "Auto",
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
-            },
-            "Trigger Dist (mm)": {
-                "type": "float",
-                "default": 5.0,
-                "min": 0.0,
-                "max": 9999.0,
-                "label": "Trigger Dist (mm)",
-            },
-            "Trigger Angle (°)": {
-                "type": "float",
-                "default": 10.0,
-                "min": 0.0,
-                "max": 360.0,
-                "label": "Trigger Angle (°)",
-            },
-            "Trigger Speed (units/s)": {
-                "type": "float",
-                "default": 0.0,
-                "min": 0.0,
-                "max": 99999.0,
-                "label": "Trigger Speed (units/s)",
-            },
-            "Trigger Duration (ms)": {
-                "type": "float",
-                "default": 500.0,
-                "min": 0.0,
-                "max": 60000.0,
-                "label": "Trigger Duration (ms)",
             },
             "note": {
                 "type": "info",
@@ -291,7 +262,6 @@ class LoomingParadigm(BaseParadigm):
         return trials
 
     def prepare_trial(self, trial_context: dict) -> str:
-        self._wind_triggered = False
         if trial_context["type"] == "looming_wind":
             wind_dir = trial_context.get("wind_dir", "none")
             if wind_dir == "none":
@@ -307,6 +277,11 @@ class LoomingParadigm(BaseParadigm):
         elif trial_context["type"] == "baseline_wind":
             self._baseline_delay = random.uniform(0.1, 1.2)
             self._baseline_post = random.uniform(1.0, 2.0)
+            wind_dir = trial_context.get("wind_dir", "none")
+            if wind_dir != "none":
+                dir_char = "R" if wind_dir == "right" else "L"
+                delay_ms = int(round(self._baseline_delay * 1000))
+                return f"<{dir_char},{delay_ms}>"
         return ""
 
     def _deg_to_pix(self, deg: float) -> float:
@@ -363,26 +338,12 @@ class LoomingParadigm(BaseParadigm):
                 stim_active = 1
 
         elif t_type == "baseline_wind":
-            wind_dir = trial_context.get("wind_dir", "none")
-            if (
-                not self._wind_triggered
-                and elapsed_time >= self._baseline_delay
-                and wind_dir != "none"
-            ):
-                dir_char = "R" if wind_dir == "right" else "L"
-                hw_cmd = f"<{dir_char},0>"
-                self._wind_triggered = True
-
-            if (
-                self._wind_triggered
-                and (elapsed_time - self._baseline_delay) >= self._baseline_post
-            ):
+            if elapsed_time >= (self._baseline_delay + self._baseline_post):
                 is_done = True
             else:
                 phase = "Baseline"
-                side = "both" if not self._wind_triggered else side
-                if self._wind_triggered:
-                    wind_active = 1
+                # side = "both"
+                stim_active = 1
 
         cmds = self._build_stimulus_commands(side, theta)
         ui_color = (
@@ -497,34 +458,6 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "default": "Auto",
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
-            },
-            "Trigger Dist (mm)": {
-                "type": "float",
-                "default": 5.0,
-                "min": 0.0,
-                "max": 9999.0,
-                "label": "Trigger Dist (mm)",
-            },
-            "Trigger Angle (°)": {
-                "type": "float",
-                "default": 10.0,
-                "min": 0.0,
-                "max": 360.0,
-                "label": "Trigger Angle (°)",
-            },
-            "Trigger Speed (units/s)": {
-                "type": "float",
-                "default": 0.0,
-                "min": 0.0,
-                "max": 99999.0,
-                "label": "Trigger Speed (units/s)",
-            },
-            "Trigger Duration (ms)": {
-                "type": "float",
-                "default": 500.0,
-                "min": 0.0,
-                "max": 60000.0,
-                "label": "Trigger Duration (ms)",
             },
         }
 
@@ -799,34 +732,6 @@ class OpticFlowParadigm(BaseParadigm):
                 "default": "Auto",
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
-            },
-            "Trigger Dist (mm)": {
-                "type": "float",
-                "default": 5.0,
-                "min": 0.0,
-                "max": 9999.0,
-                "label": "Trigger Dist (mm)",
-            },
-            "Trigger Angle (°)": {
-                "type": "float",
-                "default": 10.0,
-                "min": 0.0,
-                "max": 360.0,
-                "label": "Trigger Angle (°)",
-            },
-            "Trigger Speed (units/s)": {
-                "type": "float",
-                "default": 0.0,
-                "min": 0.0,
-                "max": 99999.0,
-                "label": "Trigger Speed (units/s)",
-            },
-            "Trigger Duration (ms)": {
-                "type": "float",
-                "default": 500.0,
-                "min": 0.0,
-                "max": 60000.0,
-                "label": "Trigger Duration (ms)",
             },
             "Random Seed": {
                 "type": "string",
@@ -1112,34 +1017,6 @@ class MovementTraceParadigm(BaseParadigm):
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
             },
-            "Trigger Dist (mm)": {
-                "type": "float",
-                "default": 5.0,
-                "min": 0.0,
-                "max": 9999.0,
-                "label": "Trigger Dist (mm)",
-            },
-            "Trigger Angle (°)": {
-                "type": "float",
-                "default": 10.0,
-                "min": 0.0,
-                "max": 360.0,
-                "label": "Trigger Angle (°)",
-            },
-            "Trigger Speed (units/s)": {
-                "type": "float",
-                "default": 0.0,
-                "min": 0.0,
-                "max": 99999.0,
-                "label": "Trigger Speed (units/s)",
-            },
-            "Trigger Duration (ms)": {
-                "type": "float",
-                "default": 500.0,
-                "min": 0.0,
-                "max": 60000.0,
-                "label": "Trigger Duration (ms)",
-            },
         }
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
@@ -1314,34 +1191,6 @@ class BlankParadigm(BaseParadigm):
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
             },
-            "Trigger Dist (mm)": {
-                "type": "float",
-                "default": 5.0,
-                "min": 0.0,
-                "max": 9999.0,
-                "label": "Trigger Dist (mm)",
-            },
-            "Trigger Angle (°)": {
-                "type": "float",
-                "default": 10.0,
-                "min": 0.0,
-                "max": 360.0,
-                "label": "Trigger Angle (°)",
-            },
-            "Trigger Speed (units/s)": {
-                "type": "float",
-                "default": 0.0,
-                "min": 0.0,
-                "max": 99999.0,
-                "label": "Trigger Speed (units/s)",
-            },
-            "Trigger Duration (ms)": {
-                "type": "float",
-                "default": 500.0,
-                "min": 0.0,
-                "max": 60000.0,
-                "label": "Trigger Duration (ms)",
-            },
         }
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
@@ -1351,7 +1200,11 @@ class BlankParadigm(BaseParadigm):
             )
         )
         return [
-            {"type": "blank_tracking", "trial_idx": i, "trial_duration": self.trial_duration}
+            {
+                "type": "blank_tracking",
+                "trial_idx": i,
+                "trial_duration": self.trial_duration,
+            }
             for i in range(n)
         ]
 

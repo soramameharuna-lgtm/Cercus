@@ -19,8 +19,8 @@ from src.models.paradigm import PARADIGM_REGISTRY
 from src.workers.stimulus_worker import worker_entry, create_ipc_queues
 from src.workers.calibration_worker import calibration_worker_entry
 
-
 # ---- Pure-Python 3x3 matrix helpers (no numpy dependency) ----
+
 
 def _det3(m):
     return (
@@ -94,7 +94,7 @@ class CalibrationPanel:
         geo_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
         geo_frame.pack(fill="x", padx=6, pady=(0, 2))
         ctk.CTkLabel(geo_frame, text="Radius (mm):").pack(side="left")
-        self.radius_var = ctk.StringVar(value="100.0")
+        self.radius_var = ctk.StringVar(value="60.0")
         ctk.CTkEntry(geo_frame, textvariable=self.radius_var, width=70).pack(
             side="left", padx=(4, 0)
         )
@@ -128,22 +128,28 @@ class CalibrationPanel:
         axis_row.pack(fill="x", padx=6, pady=(0, 2))
         axis_row.grid_columnconfigure((0, 1, 2), weight=1)
         self.btn_cal_x = ctk.CTkButton(
-            axis_row, text="Calibrate X",
-            fg_color="#1f6aa5", hover_color="#144870",
+            axis_row,
+            text="Calibrate X",
+            fg_color="#1f6aa5",
+            hover_color="#144870",
             command=lambda: self._on_start_axis("X"),
             state="disabled",
         )
         self.btn_cal_x.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.btn_cal_y = ctk.CTkButton(
-            axis_row, text="Calibrate Y",
-            fg_color="#1f6aa5", hover_color="#144870",
+            axis_row,
+            text="Calibrate Y",
+            fg_color="#1f6aa5",
+            hover_color="#144870",
             command=lambda: self._on_start_axis("Y"),
             state="disabled",
         )
         self.btn_cal_y.grid(row=0, column=1, sticky="ew", padx=(0, 4))
         self.btn_cal_z = ctk.CTkButton(
-            axis_row, text="Calibrate Z",
-            fg_color="#1f6aa5", hover_color="#144870",
+            axis_row,
+            text="Calibrate Z",
+            fg_color="#1f6aa5",
+            hover_color="#144870",
             command=lambda: self._on_start_axis("Z"),
             state="disabled",
         )
@@ -153,7 +159,8 @@ class CalibrationPanel:
         self.stop_axis_btn = ctk.CTkButton(
             self.frame,
             text="Stop Axis",
-            fg_color="red", hover_color="darkred",
+            fg_color="red",
+            hover_color="darkred",
             command=self._on_stop_axis,
             state="disabled",
         )
@@ -163,25 +170,38 @@ class CalibrationPanel:
         self.results_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
         self.results_frame.pack(fill="x", padx=6, pady=(0, 2))
 
-        self.lbl_dx = ctk.CTkLabel(self.results_frame, text="Raw DX: 0", font=("Segoe UI", 12))
+        self.lbl_dx = ctk.CTkLabel(
+            self.results_frame, text="Raw DX: 0", font=("Segoe UI", 12)
+        )
         self.lbl_dx.grid(row=0, column=0, sticky="w", padx=(0, 20))
-        self.lbl_dy = ctk.CTkLabel(self.results_frame, text="Raw DY: 0", font=("Segoe UI", 12))
+        self.lbl_dy = ctk.CTkLabel(
+            self.results_frame, text="Raw DY: 0", font=("Segoe UI", 12)
+        )
         self.lbl_dy.grid(row=1, column=0, sticky="w", padx=(0, 20))
-        self.lbl_dz = ctk.CTkLabel(self.results_frame, text="Raw DZ: 0", font=("Segoe UI", 12))
+        self.lbl_dz = ctk.CTkLabel(
+            self.results_frame, text="Raw DZ: 0", font=("Segoe UI", 12)
+        )
         self.lbl_dz.grid(row=2, column=0, sticky="w", padx=(0, 20))
 
-        self.lbl_result_x = ctk.CTkLabel(self.results_frame, text="X: --", font=("Segoe UI", 11))
+        self.lbl_result_x = ctk.CTkLabel(
+            self.results_frame, text="X: --", font=("Segoe UI", 11)
+        )
         self.lbl_result_x.grid(row=0, column=1, sticky="w")
-        self.lbl_result_y = ctk.CTkLabel(self.results_frame, text="Y: --", font=("Segoe UI", 11))
+        self.lbl_result_y = ctk.CTkLabel(
+            self.results_frame, text="Y: --", font=("Segoe UI", 11)
+        )
         self.lbl_result_y.grid(row=1, column=1, sticky="w")
-        self.lbl_result_z = ctk.CTkLabel(self.results_frame, text="Z: --", font=("Segoe UI", 11))
+        self.lbl_result_z = ctk.CTkLabel(
+            self.results_frame, text="Z: --", font=("Segoe UI", 11)
+        )
         self.lbl_result_z.grid(row=2, column=1, sticky="w")
 
         # --- Apply Matrix ---
         self.apply_btn = ctk.CTkButton(
             self.frame,
             text="Apply Matrix",
-            fg_color="green", hover_color="darkgreen",
+            fg_color="green",
+            hover_color="darkgreen",
             command=self._on_apply,
             state="disabled",
         )
@@ -189,7 +209,8 @@ class CalibrationPanel:
 
         # --- Manual 3x3 Matrix Grid ---
         ctk.CTkLabel(
-            self.frame, text="Manual Calibration Matrix",
+            self.frame,
+            text="Manual Calibration Matrix",
             font=("Segoe UI", 11, "bold"),
         ).pack(fill="x", padx=6, pady=(2, 2))
 
@@ -202,7 +223,9 @@ class CalibrationPanel:
             for c in range(3):
                 var = ctk.StringVar(value="0.0000" if r != c else "1.0000")
                 entry = ctk.CTkEntry(
-                    grid_frame, textvariable=var, width=80,
+                    grid_frame,
+                    textvariable=var,
+                    width=80,
                     font=("Segoe UI", 11),
                 )
                 entry.grid(row=r, column=c, padx=2, pady=2)
@@ -212,7 +235,8 @@ class CalibrationPanel:
         self.manual_save_btn = ctk.CTkButton(
             self.frame,
             text="Save/Update Manual Parameters",
-            fg_color="#6b5b95", hover_color="#4a3f6b",
+            fg_color="#6b5b95",
+            hover_color="#4a3f6b",
             command=self._on_manual_save,
         )
         self.manual_save_btn.pack(fill="x", padx=6, pady=(0, 2))
@@ -224,8 +248,9 @@ class CalibrationPanel:
 
     # ---- public API for MasterDashboard ----
 
-    def set_callbacks(self, enter=None, exit_=None, start_axis=None,
-                      stop_axis=None, apply_matrix=None):
+    def set_callbacks(
+        self, enter=None, exit_=None, start_axis=None, stop_axis=None, apply_matrix=None
+    ):
         self._cb_enter = enter
         self._cb_exit = exit_
         self._cb_start_axis = start_axis
@@ -254,7 +279,7 @@ class CalibrationPanel:
             lbl = getattr(self, f"lbl_result_{axis.lower()}")
             lbl.configure(
                 text=f"{axis}: target={data['target_mm']:.1f}mm  "
-                     f"raw=[{rv[0]}, {rv[1]}, {rv[2]}]",
+                f"raw=[{rv[0]}, {rv[1]}, {rv[2]}]",
                 text_color="lime",
             )
             self._current_axis = None
@@ -289,7 +314,8 @@ class CalibrationPanel:
         self.axis_results.clear()
         self.toggle_btn.configure(
             text="Enter Calibration",
-            fg_color="#1f6aa5", hover_color="#144870",
+            fg_color="#1f6aa5",
+            hover_color="#144870",
             state="normal",
         )
         for axis in ("x", "y", "z"):
@@ -307,7 +333,11 @@ class CalibrationPanel:
     # ---- internal ----
 
     def _update_axis_button_states(self):
-        base = "normal" if self._calib_active and self._current_axis is None else "disabled"
+        base = (
+            "normal"
+            if self._calib_active and self._current_axis is None
+            else "disabled"
+        )
         for axis in ("x", "y", "z"):
             btn = getattr(self, f"btn_cal_{axis}")
             if self._calib_active and self._current_axis is None:
@@ -331,7 +361,9 @@ class CalibrationPanel:
             self.lbl_dx.configure(text="Raw DX: 0")
             self.lbl_dy.configure(text="Raw DY: 0")
             self.lbl_dz.configure(text="Raw DZ: 0")
-            self.status_lbl.configure(text="Calibration active. Pick an axis.", text_color="cyan")
+            self.status_lbl.configure(
+                text="Calibration active. Pick an axis.", text_color="cyan"
+            )
             self._update_axis_button_states()
             if self._cb_enter:
                 self._cb_enter()
@@ -467,6 +499,8 @@ class MasterDashboard:
 
         self._param_vars: Dict[str, ctk.StringVar] = {}
         self._param_widgets: List[ctk.CTkBaseClass] = []
+        self._trigger_interlocks: List[tuple] = []
+        self._refreshing: bool = False
         self._exit_attempts: int = 0
 
         # Trajectory panel state
@@ -478,7 +512,7 @@ class MasterDashboard:
         self._trail_max_y: float = 0.0
         self._create_widgets()
         self._load_default_config()
-        self._on_paradigm_change()
+        self.refresh_dynamic_parameters()
         self.root.after(16, self._poll_telemetry)
 
     # ------------------------------------------------------------------
@@ -527,7 +561,7 @@ class MasterDashboard:
             row=0, column=0, sticky="w", padx=10, pady=5
         )
         self.paradigm_var = ctk.StringVar(value=list(PARADIGM_REGISTRY.keys())[0])
-        self.paradigm_var.trace_add("write", self._on_paradigm_change)
+        self.paradigm_var.trace_add("write", self.refresh_dynamic_parameters)
         ctk.CTkOptionMenu(
             cfg_frame,
             variable=self.paradigm_var,
@@ -642,7 +676,7 @@ class MasterDashboard:
             row=7, column=0, columnspan=2, sticky="w", padx=10, pady=10
         )
 
-        # Row 8+: Dynamic paradigm parameters
+        # Row 8+: Dynamic paradigm parameters + kinematic trigger params
         self._param_frame = ctk.CTkScrollableFrame(cfg_frame)
         self._param_frame.grid(
             row=8, column=0, columnspan=4, sticky="nsew", padx=10, pady=(5, 10)
@@ -723,17 +757,29 @@ class MasterDashboard:
         self._kin_row.pack(fill="x")
 
         self._lbl_kin_angle = ctk.CTkLabel(
-            self._kin_row, text="θ: —", font=("Consolas", 11), text_color="cyan", width=90
+            self._kin_row,
+            text="θ: —",
+            font=("Consolas", 11),
+            text_color="cyan",
+            width=90,
         )
         self._lbl_kin_angle.pack(side="left")
 
         self._lbl_kin_turn = ctk.CTkLabel(
-            self._kin_row, text="ω: —", font=("Consolas", 11), text_color="lime", width=90
+            self._kin_row,
+            text="ω: —",
+            font=("Consolas", 11),
+            text_color="lime",
+            width=90,
         )
         self._lbl_kin_turn.pack(side="left")
 
         self._lbl_kin_disp = ctk.CTkLabel(
-            self._kin_row, text="D: —", font=("Consolas", 11), text_color="orange", width=90
+            self._kin_row,
+            text="D: —",
+            font=("Consolas", 11),
+            text_color="orange",
+            width=90,
         )
         self._lbl_kin_disp.pack(side="left")
 
@@ -786,9 +832,18 @@ class MasterDashboard:
         return val
 
     # ------------------------------------------------------------------
-    # Dynamic parameter form
+    # Unified dynamic parameter refresh
     # ------------------------------------------------------------------
-    def _on_paradigm_change(self, *args):
+    def refresh_dynamic_parameters(self, *args):
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._do_refresh()
+        finally:
+            self._refreshing = False
+
+    def _do_refresh(self):
         p_name = self.paradigm_var.get()
         p_cls = PARADIGM_REGISTRY.get(p_name)
         if p_cls is None:
@@ -796,19 +851,27 @@ class MasterDashboard:
 
         patterns = p_cls.get_available_patterns()
         self.pattern_menu.configure(values=patterns)
-        if patterns:
+        if patterns and self.pattern_var.get() not in patterns:
             self.pattern_var.set(patterns[0])
 
-        # Rebuild dynamic form
+        # Preserve execution mode across refresh
+        saved_exec_mode = None
+        if "Execution Mode" in self._param_vars:
+            saved_exec_mode = self._param_vars["Execution Mode"].get()
+
+        # 1. Clear all existing dynamic widgets
         for w in self._param_widgets:
             w.destroy()
         self._param_widgets.clear()
+        self._trigger_interlocks.clear()
         self._param_vars.clear()
         self._param_frame.grid_columnconfigure(2, weight=1)
 
+        row = 0
+
+        # 2. Render paradigm-specific parameters
         schema = p_cls.get_parameter_schema()
         if schema:
-            row = 0
             for key, meta in schema.items():
                 p_type = meta.get("type", "info")
                 label_text = meta.get("label", key)
@@ -836,11 +899,10 @@ class MasterDashboard:
                 self._param_vars[key] = var
 
                 if p_type == "choice":
-                    choices = meta.get("choices", [])
                     w = ctk.CTkOptionMenu(
                         self._param_frame,
                         variable=var,
-                        values=choices,
+                        values=meta.get("choices", []),
                         width=160,
                     )
                 elif p_type == "bool":
@@ -873,15 +935,60 @@ class MasterDashboard:
                 self._param_widgets.append(w)
                 row += 1
 
-        # Bind execution mode trace to toggle Total Sessions visibility
-        if "Execution Mode" in self._param_vars:
-            exec_var = self._param_vars["Execution Mode"]
-            exec_var.trace_add("write", self._on_exec_mode_change)
-            self._on_exec_mode_change()
+        # Restore execution mode selection
+        if saved_exec_mode and "Execution Mode" in self._param_vars:
+            self._param_vars["Execution Mode"].set(saved_exec_mode)
 
-    # ------------------------------------------------------------------
-    # Execution mode toggle
-    # ------------------------------------------------------------------
+        # 3. Render kinematic trigger parameters (only when Execution Mode is Kinematic)
+        exec_mode = self._param_vars.get("Execution Mode")
+        if exec_mode and exec_mode.get() == "Kinematic":
+            _KINEMATIC_PARAMS = [
+                ("Trigger Duration (ms)", 500.0, "Trigger Duration (ms):"),
+                ("Trigger Dist (mm)", 5.0, "Trigger Dist (mm):"),
+                ("Trigger Angle (°)", 10.0, "Trigger Angle (°):"),
+                ("Trigger Speed (units/s)", 0.0, "Trigger Speed (units/s):"),
+            ]
+            _CHECKBOX_KEYS = {
+                "Trigger Dist (mm)",
+                "Trigger Angle (°)",
+                "Trigger Speed (units/s)",
+            }
+
+            for key, default, label_text in _KINEMATIC_PARAMS:
+                lbl = ctk.CTkLabel(self._param_frame, text=label_text)
+                lbl.grid(row=row, column=0, sticky="w", padx=10, pady=4)
+                self._param_widgets.append(lbl)
+
+                var = ctk.StringVar(value=str(default))
+                self._param_vars[key] = var
+                entry = ctk.CTkEntry(self._param_frame, textvariable=var, width=100)
+                entry.grid(row=row, column=1, sticky="w", padx=10, pady=4)
+                self._param_widgets.append(entry)
+
+                if key in _CHECKBOX_KEYS:
+                    en_key = f"{key} Enabled"
+                    en_var = ctk.BooleanVar(value=True)
+                    self._param_vars[en_key] = en_var
+                    cb = ctk.CTkCheckBox(
+                        self._param_frame,
+                        text="",
+                        variable=en_var,
+                        width=20,
+                        command=lambda v=en_var, inp=entry: self._on_trigger_toggle(
+                            v, inp
+                        ),
+                    )
+                    cb.grid(row=row, column=2, sticky="w", padx=(0, 10))
+                    self._param_widgets.append(cb)
+                    self._trigger_interlocks.append((en_var, entry))
+                row += 1
+
+        # 4. Bind execution mode trace (after all widgets are built)
+        if "Execution Mode" in self._param_vars:
+            self._param_vars["Execution Mode"].trace_add(
+                "write", self._on_exec_mode_change
+            )
+
     def _on_exec_mode_change(self, *args):
         if "Execution Mode" not in self._param_vars:
             self._session_sep_label.pack_forget()
@@ -889,6 +996,8 @@ class MasterDashboard:
             return
 
         mode = self._param_vars["Execution Mode"].get()
+
+        # Total Sessions visibility
         if mode == "Manual":
             self._session_sep_label.pack_forget()
             self._session_total_entry.pack_forget()
@@ -898,6 +1007,11 @@ class MasterDashboard:
             if not self._session_total_entry.winfo_ismapped():
                 self._session_total_entry.pack(side="left")
 
+        # Full redraw — paradigm params preserved, kinematic params conditionally appended
+        self.refresh_dynamic_parameters()
+
+    def _on_trigger_toggle(self, cb_var: ctk.BooleanVar, entry: ctk.CTkEntry):
+        entry.configure(state="normal" if cb_var.get() else "disabled")
 
     # ------------------------------------------------------------------
     # File browser helper
@@ -938,7 +1052,8 @@ class MasterDashboard:
                     ]
                     self._calib_panel.update_matrix_display(self._calib_matrix)
                     self._calib_panel.status_lbl.configure(
-                        text="Legacy factors loaded (as diagonal matrix)", text_color="lime"
+                        text="Legacy factors loaded (as diagonal matrix)",
+                        text_color="lime",
                     )
         except Exception:
             pass
@@ -1029,6 +1144,26 @@ class MasterDashboard:
             "_output_dir": out_dir,
         }
         cfg.update(paradigm_params)
+
+        # Kinematic trigger params (present only when Execution Mode is Kinematic)
+        pv = self._param_vars
+        if "Trigger Duration (ms)" in pv:
+            cfg["Trigger Duration (ms)"] = self._safe_float(
+                pv["Trigger Duration (ms)"].get(), 500.0
+            )
+            cfg["Trigger Dist (mm)"] = self._safe_float(
+                pv["Trigger Dist (mm)"].get(), 5.0
+            )
+            cfg["Trigger Dist Enabled"] = bool(pv["Trigger Dist Enabled"].get())
+            cfg["Trigger Angle (°)"] = self._safe_float(
+                pv["Trigger Angle (°)"].get(), 10.0
+            )
+            cfg["Trigger Angle Enabled"] = bool(pv["Trigger Angle Enabled"].get())
+            cfg["Trigger Speed (units/s)"] = self._safe_float(
+                pv["Trigger Speed (units/s)"].get(), 0.0
+            )
+            cfg["Trigger Speed Enabled"] = bool(pv["Trigger Speed Enabled"].get())
+
         return cfg
 
     # ------------------------------------------------------------------
@@ -1135,12 +1270,14 @@ class MasterDashboard:
         """Send START_CALIBRATION command for a specific axis."""
         if self.calib_cmd_queue:
             try:
-                self.calib_cmd_queue.put_nowait({
-                    "action": "START_CALIBRATION",
-                    "axis": axis,
-                    "radius_mm": radius_mm,
-                    "rotations": rotations,
-                })
+                self.calib_cmd_queue.put_nowait(
+                    {
+                        "action": "START_CALIBRATION",
+                        "axis": axis,
+                        "radius_mm": radius_mm,
+                        "rotations": rotations,
+                    }
+                )
             except queue.Full:
                 pass
 
@@ -1176,7 +1313,9 @@ class MasterDashboard:
             pass
         self._calib_panel.update_matrix_display(matrix)
         self._calib_just_applied = True
-        self.status_label.configure(text="Calibration matrix applied & saved", text_color="lime")
+        self.status_label.configure(
+            text="Calibration matrix applied & saved", text_color="lime"
+        )
 
     def _on_calib_process_exit(self):
         """Clean up after calibration worker exits."""
@@ -1251,7 +1390,10 @@ class MasterDashboard:
                         salvaged_event = data
 
                     if batch_count > 100:
-                        self.status_label.configure(text="Warning: UI Telemetry Lag Detected", text_color="orange")
+                        self.status_label.configure(
+                            text="Warning: UI Telemetry Lag Detected",
+                            text_color="orange",
+                        )
                         break
                 except (queue.Empty, ValueError, OSError):
                     break
@@ -1267,11 +1409,17 @@ class MasterDashboard:
 
                 self.stop_btn.configure(state="disabled")
                 if action == "worker_done":
-                    self.status_label.configure(text="Experiment completed. Cleaning up...", text_color="white")
+                    self.status_label.configure(
+                        text="Experiment completed. Cleaning up...", text_color="white"
+                    )
                 elif action == "worker_abort":
-                    self.status_label.configure(text="Experiment aborted. Cleaning up...", text_color="orange")
+                    self.status_label.configure(
+                        text="Experiment aborted. Cleaning up...", text_color="orange"
+                    )
                 elif action == "worker_error":
-                    self.status_label.configure(text=f"Error: {self._worker_terminal_error}", text_color="red")
+                    self.status_label.configure(
+                        text=f"Error: {self._worker_terminal_error}", text_color="red"
+                    )
 
         if self.worker_process and not self.worker_process.is_alive():
             # Salvage terminal signals that may be buried deep in the queue
@@ -1279,7 +1427,11 @@ class MasterDashboard:
                 while not self.telemetry_queue.empty():
                     try:
                         frame = self.telemetry_queue.get_nowait()
-                        if frame.get("action") in ["worker_done", "worker_abort", "worker_error"]:
+                        if frame.get("action") in [
+                            "worker_done",
+                            "worker_abort",
+                            "worker_error",
+                        ]:
                             self._worker_terminal_status = frame.get("action")
                             if "error" in frame:
                                 self._worker_terminal_error = frame["error"]
@@ -1294,7 +1446,10 @@ class MasterDashboard:
             elif status == "worker_abort":
                 text, color = "Experiment aborted", "orange"
             elif status == "worker_error":
-                text, color = f"Error: {getattr(self, '_worker_terminal_error', 'Unknown')}", "red"
+                text, color = (
+                    f"Error: {getattr(self, '_worker_terminal_error', 'Unknown')}",
+                    "red",
+                )
             elif self.start_btn.cget("state") == "disabled" and not self.calib_process:
                 text, color = "Worker disconnected", "gray"
             else:
@@ -1386,9 +1541,12 @@ class MasterDashboard:
         raw_phase = str(data.get("phase", ""))
 
         base_phase = raw_phase
-        if raw_phase.startswith("ITI"): base_phase = "ITI"
-        elif raw_phase.startswith("ISI"): base_phase = "ISI"
-        elif raw_phase.startswith("Kinematic"): base_phase = "Kinematic"
+        if raw_phase.startswith("ITI"):
+            base_phase = "ITI"
+        elif raw_phase.startswith("ISI"):
+            base_phase = "ISI"
+        elif raw_phase.startswith("Kinematic"):
+            base_phase = "Kinematic"
 
         if base_phase != self._trail_last_phase:
             self._reset_trajectory()
@@ -1511,7 +1669,9 @@ class MasterDashboard:
     def _check_safe_exit(self):
         """Poll until both processes exit, then destroy; force after 2s."""
         self._exit_attempts += 1
-        worker_alive = self.worker_process is not None and self.worker_process.is_alive()
+        worker_alive = (
+            self.worker_process is not None and self.worker_process.is_alive()
+        )
         calib_alive = self.calib_process is not None and self.calib_process.is_alive()
 
         if not worker_alive and not calib_alive:
