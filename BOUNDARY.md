@@ -1,0 +1,15 @@
+# BOUNDARY.md — Global Topology Constraints
+
+## Process Physical Isolation
+
+- `dashboard.py` (main controller) and `stimulus_worker.py` / `calibration_worker.py` (worker nodes) MUST NOT share memory or global variables.
+- The ONLY合法 path for cross-process data flow is `multiprocessing.Queue`.
+- `cmd_queue`: main -> worker (commands, config, abort signals).
+- `telemetry_queue`: worker -> main (status, metrics, terminal signals).
+- Violation: any use of `mp.shared_memory`, `mp.Value`, `mp.Array`, `global` variables accessed across process boundaries, or direct function calls from UI into worker internals.
+
+## Global Dependency Lock
+
+- `requirements.txt` and environment configuration files are LOCKED.
+- Introducing ANY new third-party Python library requires explicit human approval.
+- Violation: adding entries to `requirements.txt`, `setup.py`, `pyproject.toml`, or any `pip install` without documented human authorization.
