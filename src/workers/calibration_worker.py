@@ -1,3 +1,4 @@
+import logging
 import math
 import multiprocessing as mp
 import queue
@@ -6,6 +7,8 @@ import time
 from typing import Dict, Any
 
 from src.core.hardware import SerialDaemon, MockSerialDaemon
+
+logger = logging.getLogger(__name__)
 
 
 def _term_handler(signum, frame):
@@ -55,7 +58,7 @@ class CalibrationWorker:
     def _push(self, frame: dict):
         try:
             self.telemetry_queue.put_nowait(frame)
-        except (queue.Full, ValueError):
+        except (queue.Full, ValueError, OSError, EOFError):
             pass
 
     def _poll_commands(self):
@@ -94,6 +97,7 @@ class CalibrationWorker:
         hw_daemon = None
         try:
             sp = self.config.get("Serial Port", "mock")
+            logger.info("CalibrationWorker starting, port=%s", sp)
             t0 = time.monotonic()
             clock = lambda: time.monotonic() - t0
 
@@ -104,6 +108,7 @@ class CalibrationWorker:
                 hw_daemon = SerialDaemon(sp)
                 hw_daemon.start(time_func=clock)
             self._hw_daemon = hw_daemon
+            logger.info("CalibrationWorker daemon started, is_alive=%s", hw_daemon.is_alive())
 
             last_push = 0.0
 
@@ -164,9 +169,11 @@ class CalibrationWorker:
                     "raw_vector": [self._raw_dx, self._raw_dy, self._raw_dz],
                 })
 
+            logger.info("CalibrationWorker main loop exited, abort=%s, state=%s", self._abort, self._state)
             self._push({"action": "calibration_done"})
 
         except Exception as e:
+            logger.error("CalibrationWorker crashed: %s", e, exc_info=True)
             self._push({"action": "calibration_error", "error": str(e)})
         finally:
             if hw_daemon:

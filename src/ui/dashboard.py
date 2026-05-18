@@ -1240,15 +1240,18 @@ class MasterDashboard:
         if self.calib_process and self.calib_process.is_alive():
             return
 
-        # Shut down stimulus worker if running
-        if self.worker_process and self.worker_process.is_alive():
-            if self.cmd_queue:
-                try:
-                    self.cmd_queue.put_nowait({"action": "POISON_PILL"})
-                except queue.Full:
-                    pass
-            self._close_queues()
-            self._kill_worker(self.worker_process)
+        # Shut down stimulus worker if running; always clear stale reference
+        # to prevent _poll_telemetry from detecting a dead worker and calling
+        # _reset_ui() which would immediately exit calibration mode.
+        if self.worker_process:
+            if self.worker_process.is_alive():
+                if self.cmd_queue:
+                    try:
+                        self.cmd_queue.put_nowait({"action": "POISON_PILL"})
+                    except queue.Full:
+                        pass
+                self._close_queues()
+                self._kill_worker(self.worker_process)
             self.worker_process = None
 
         self.start_btn.configure(state="disabled")
@@ -1395,7 +1398,7 @@ class MasterDashboard:
                             text_color="orange",
                         )
                         break
-                except (queue.Empty, ValueError, OSError):
+                except (queue.Empty, ValueError, OSError, EOFError):
                     break
 
             if latest_telemetry:
@@ -1422,42 +1425,49 @@ class MasterDashboard:
                     )
 
         if self.worker_process and not self.worker_process.is_alive():
-            # Salvage terminal signals that may be buried deep in the queue
-            if self.telemetry_queue:
-                while not self.telemetry_queue.empty():
-                    try:
-                        frame = self.telemetry_queue.get_nowait()
-                        if frame.get("action") in [
-                            "worker_done",
-                            "worker_abort",
-                            "worker_error",
-                        ]:
-                            self._worker_terminal_status = frame.get("action")
-                            if "error" in frame:
-                                self._worker_terminal_error = frame["error"]
-                    except (queue.Empty, ValueError, OSError):
-                        break
-
-            status = getattr(self, "_worker_terminal_status", None)
-            color, text = "white", "Ready"
-
-            if status == "worker_done":
-                text, color = "Experiment completed", "lime"
-            elif status == "worker_abort":
-                text, color = "Experiment aborted", "orange"
-            elif status == "worker_error":
-                text, color = (
-                    f"Error: {getattr(self, '_worker_terminal_error', 'Unknown')}",
-                    "red",
-                )
-            elif self.start_btn.cget("state") == "disabled" and not self.calib_process:
-                text, color = "Worker disconnected", "gray"
+            # Skip dead-worker cleanup while calibration is active — the stale
+            # reference must not trigger _reset_ui() which would exit calibration.
+            if self._calib_panel._calib_active:
+                self._close_queues()
+                self._kill_worker(self.worker_process)
+                self.worker_process = None
             else:
-                text, color = None, None
+                # Salvage terminal signals that may be buried deep in the queue
+                if self.telemetry_queue:
+                    while not self.telemetry_queue.empty():
+                        try:
+                            frame = self.telemetry_queue.get_nowait()
+                            if frame.get("action") in [
+                                "worker_done",
+                                "worker_abort",
+                                "worker_error",
+                            ]:
+                                self._worker_terminal_status = frame.get("action")
+                                if "error" in frame:
+                                    self._worker_terminal_error = frame["error"]
+                        except (queue.Empty, ValueError, OSError, EOFError):
+                            break
 
-            if text:
-                self._reset_ui(text, color)
-            self._worker_terminal_status = None
+                status = getattr(self, "_worker_terminal_status", None)
+                color, text = "white", "Ready"
+
+                if status == "worker_done":
+                    text, color = "Experiment completed", "lime"
+                elif status == "worker_abort":
+                    text, color = "Experiment aborted", "orange"
+                elif status == "worker_error":
+                    text, color = (
+                        f"Error: {getattr(self, '_worker_terminal_error', 'Unknown')}",
+                        "red",
+                    )
+                elif self.start_btn.cget("state") == "disabled" and not self.calib_process:
+                    text, color = "Worker disconnected", "gray"
+                else:
+                    text, color = None, None
+
+                if text:
+                    self._reset_ui(text, color)
+                self._worker_terminal_status = None
 
         # --- Calibration telemetry ---
         if self.calib_telemetry_queue:
@@ -1472,7 +1482,7 @@ class MasterDashboard:
                     elif action in ("calibration_done", "calibration_error"):
                         self._on_calib_process_exit()
                         break
-                except (queue.Empty, ValueError):
+                except (queue.Empty, ValueError, OSError, EOFError):
                     break
 
         if self.calib_process and not self.calib_process.is_alive():

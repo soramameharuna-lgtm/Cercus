@@ -114,8 +114,11 @@ class SerialDaemon:
         # Compute clock offset once so threads use perf_counter without GIL contention
         self._clock_offset = time_func() - time.perf_counter()
         if not HAS_SERIAL:
-            return
+            raise RuntimeError(
+                f"pyserial not installed — cannot open port {self.port}"
+            )
 
+        last_err = None
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -129,10 +132,15 @@ class SerialDaemon:
                 threading.Thread(target=self._reader_loop, daemon=True).start()
                 threading.Thread(target=self._writer_loop, daemon=True).start()
                 return
-            except Exception:
+            except Exception as e:
+                last_err = e
                 self._serial = None
                 if attempt < max_retries - 1:
                     time.sleep(0.5)
+
+        raise RuntimeError(
+            f"Failed to open serial port {self.port} after {max_retries} attempts: {last_err}"
+        )
 
     def _reader_loop(self):
         error_count = 0
