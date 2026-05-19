@@ -20,13 +20,24 @@ class CoreRenderer:
         self.objects: Dict[str, Any] = {}
         self.visual = visual
 
-    def _create_obj(self, cmd: dict):
+    _TYPE_MAP: Dict[str, str] = {
+        "circle": "Circle",
+        "rect": "Rect",
+    }
+
+    def _create_obj(self, cmd: dict) -> Any:
+        # New protocol: reflection-based instantiation
+        class_name = cmd.get("class_name")
+        if class_name:
+            cls = getattr(self.visual, class_name, None)
+            if cls is None:
+                return None
+            init_kwargs = cmd.get("init_kwargs", {})
+            return cls(self.win, **init_kwargs)
+
+        # Legacy protocol: hardcoded type dispatch
         t = cmd.get("type")
-        if t == "circle":
-            return self.visual.Circle(self.win, edges=128)
-        elif t == "rect":
-            return self.visual.Rect(self.win)
-        elif t == "element_array":
+        if t == "element_array":
             return self.visual.ElementArrayStim(
                 self.win,
                 nElements=cmd.get("n_elements", 1),
@@ -38,33 +49,45 @@ class CoreRenderer:
                 colorSpace="rgb",
                 opacities=cmd.get("opacities", 1.0),
             )
+
+        mapped = self._TYPE_MAP.get(t)
+        if mapped:
+            cls = getattr(self.visual, mapped, None)
+            if cls is not None:
+                if mapped == "Circle":
+                    return cls(
+                        self.win,
+                        edges=128,
+                        fillColor=cmd.get("fillColor", [-1, -1, -1]),
+                        lineColor=cmd.get("lineColor", [-1, -1, -1]),
+                        colorSpace="rgb",
+                    )
+                return cls(self.win)
         return None
 
     def _apply_command(self, cmd: dict):
         obj_id = cmd.get("id")
-        cmd_type = cmd.get("type")
 
-        if cmd_type == "element_array":
+        # ElementArrayStim: always a special-case rendering path
+        if cmd.get("type") == "element_array":
             key = obj_id or "__element_array__"
             if key not in self.objects:
                 self.objects[key] = self._create_obj(cmd)
             obj = self.objects[key]
             if obj is None:
                 return
+            for attr in ("xys", "sizes", "colors", "opacities"):
+                if attr in cmd:
+                    setattr(obj, attr, cmd[attr])
             if "xys" in cmd:
-                obj.xys = cmd["xys"]
                 obj.nElements = cmd.get("n_elements", len(cmd["xys"]))
-            if "sizes" in cmd:
-                obj.sizes = cmd["sizes"]
-            if "colors" in cmd:
-                obj.colors = cmd["colors"]
-            if "opacities" in cmd:
-                obj.opacities = cmd["opacities"]
             obj.draw()
             return
 
         if obj_id is None:
             return
+
+        # Lazy instantiation on first encounter
         if obj_id not in self.objects:
             obj = self._create_obj(cmd)
             if obj:
@@ -74,16 +97,39 @@ class CoreRenderer:
         if not obj:
             return
 
-        if "radius" in cmd:
-            obj.radius = cmd["radius"]
-        if "pos" in cmd:
-            obj.pos = cmd["pos"]
-        if "width" in cmd and "height" in cmd:
-            obj.size = (cmd["width"], cmd["height"])
-        if "fillColor" in cmd:
-            obj.fillColor = cmd["fillColor"]
-        if "lineColor" in cmd:
-            obj.lineColor = cmd["lineColor"]
+        # New protocol: generic property updates
+        updates = cmd.get("updates")
+        if updates:
+            for k, v in updates.items():
+                try:
+                    setattr(obj, k, v)
+                except Exception:
+                    pass
+        else:
+            if not hasattr(obj, "_state_cache"):
+                obj._state_cache = {}
+
+            if "radius" in cmd and obj._state_cache.get("radius") != cmd["radius"]:
+                obj.radius = cmd["radius"]
+                obj._state_cache["radius"] = cmd["radius"]
+
+            if "pos" in cmd and obj._state_cache.get("pos") != cmd["pos"]:
+                obj.pos = cmd["pos"]
+                obj._state_cache["pos"] = cmd["pos"]
+
+            if "width" in cmd and "height" in cmd:
+                sz = (cmd["width"], cmd["height"])
+                if obj._state_cache.get("size") != sz:
+                    obj.size = sz
+                    obj._state_cache["size"] = sz
+
+            if "fillColor" in cmd and obj._state_cache.get("fillColor") != cmd["fillColor"]:
+                obj.fillColor = cmd["fillColor"]
+                obj._state_cache["fillColor"] = cmd["fillColor"]
+
+            if "lineColor" in cmd and obj._state_cache.get("lineColor") != cmd["lineColor"]:
+                obj.lineColor = cmd["lineColor"]
+                obj._state_cache["lineColor"] = cmd["lineColor"]
 
         obj.draw()
 
@@ -151,6 +197,8 @@ class ScreenEnvironment:
             assignments = [outer_color, inner_color, inner_color, outer_color]
 
         for sb, color in zip(self._sync_blocks, assignments):
-            sb.fillColor = color
-            sb.lineColor = color
+            if getattr(sb, "_last_color", None) != color:
+                sb.fillColor = color
+                sb.lineColor = color
+                sb._last_color = color
             sb.draw()

@@ -69,6 +69,20 @@ class GenericWorker:
         )
         self._sustained_speed_above_since = -1.0
 
+    def _push_telemetry_debounced(self, session_num: int, trial_idx: int, total_trials: int, data: dict, hw_tel: dict = None):
+        now = time.monotonic()
+        if now - self._last_telemetry_push < self._telemetry_interval:
+            return
+        self._last_telemetry_push = now
+
+        payload = self._build_telemetry(session_num, trial_idx, total_trials, data, hw_tel)
+        try:
+            self.telemetry_queue.put_nowait(payload)
+        except queue.Full:
+            pass
+        except (BrokenPipeError, EOFError, ValueError):
+            self.abort_flag = True
+
     def _push(self, frame: dict, force: bool = False):
         try:
             if force:
@@ -125,8 +139,6 @@ class GenericWorker:
                 ]
                 if kin_rows:
                     logger.log_kinematics_batch(kin_rows)
-                if logger.kin_buffer_size() > 10000:
-                    logger.flush_kinematics()
 
             for sys_t, raw in items:
                 tel = self.parser.get_telemetry(raw)
@@ -257,8 +269,22 @@ class GenericWorker:
                 tel["phase"] = "Adaptation"
                 tel["ui_color"] = "#ff4d4d"
                 self._present(renderer, env, cmds, sync_states)
-                self._push(self._build_telemetry(0, 0, 0, tel, hw_tel=hw_tel))
-            logger.flush_kinematics()
+                self._push_telemetry_debounced(0, 0, 0, tel, hw_tel=hw_tel)
+            # --- Pre-warm: generate trials & open session before any wait ---
+            total_sessions = int(self.config["Total Sessions"])
+            first_session_num = int(self.config["Session Number"])
+            trials = self.paradigm.generate_trials(
+                self.config["Experiment Pattern"]
+            )
+            logger.open_session(
+                self.config.get("Subject ID"),
+                first_session_num,
+                self.parser.get_headers(),
+            )
+            # Pre-prepare first trial so SPACE triggers zero-delay rendering
+            first_init_cmd = ""
+            if trials:
+                first_init_cmd = self.paradigm.prepare_trial(trials[0])
 
             # --- Auto-start wait ---
             if self.config.get("Execution Mode") in ("Auto", "Kinematic"):
@@ -275,7 +301,7 @@ class GenericWorker:
                     tel["phase"] = "WAIT [SPACE] (Auto Start)"
                     tel["ui_color"] = "orange"
                     self._present(renderer, env, cmds, sync_states)
-                    self._push(self._build_telemetry(0, 0, 0, tel, hw_tel=hw_tel))
+                    self._push_telemetry_debounced(0, 0, 0, tel, hw_tel=hw_tel)
 
                     all_keys = self.event.getKeys()
                     keys = [k for k in all_keys if k in ["space", "escape"]]
@@ -286,27 +312,32 @@ class GenericWorker:
                         break
 
             # --- Session loop ---
-            total_sessions = int(self.config["Total Sessions"])
             s_idx = 0
             while True:
                 if total_sessions != -1 and s_idx >= total_sessions:
                     break
 
                 self._sync_state()
-                current_session = int(self.config["Session Number"]) + s_idx
-                trials = self.paradigm.generate_trials(
-                    self.config["Experiment Pattern"]
-                )
 
-                logger.open_session(
-                    self.config.get("Subject ID"),
-                    current_session,
-                    self.parser.get_headers(),
-                )
+                if s_idx > 0:
+                    current_session = int(self.config["Session Number"]) + s_idx
+                    trials = self.paradigm.generate_trials(
+                        self.config["Experiment Pattern"]
+                    )
+                    logger.open_session(
+                        self.config.get("Subject ID"),
+                        current_session,
+                        self.parser.get_headers(),
+                    )
+                else:
+                    current_session = first_session_num
 
                 for t_idx, trial in enumerate(trials):
                     self._sync_state()
-                    init_cmd = self.paradigm.prepare_trial(trial)
+                    if s_idx == 0 and t_idx == 0:
+                        init_cmd = first_init_cmd
+                    else:
+                        init_cmd = self.paradigm.prepare_trial(trial)
 
                     # --- ITI ---
                     if t_idx > 0:
@@ -330,11 +361,9 @@ class GenericWorker:
                                 tel["phase"] = f"ITI ({clock.getTime()-t_iti:.1f}s)"
                                 tel["ui_color"] = "orange"
                                 self._present(renderer, env, cmds, sync_states)
-                                self._push(
-                                    self._build_telemetry(
-                                        current_session, t_idx, len(trials), tel,
-                                        hw_tel=hw_tel,
-                                    )
+                                self._push_telemetry_debounced(
+                                    current_session, t_idx, len(trials), tel,
+                                    hw_tel=hw_tel,
                                 )
 
                     # --- Manual wait ---
@@ -354,11 +383,9 @@ class GenericWorker:
                             tel["phase"] = "Wait [SPACE]"
                             tel["ui_color"] = "orange"
                             self._present(renderer, env, cmds, sync_states)
-                            self._push(
-                                self._build_telemetry(
-                                    current_session, t_idx, len(trials), tel,
-                                    hw_tel=hw_tel,
-                                )
+                            self._push_telemetry_debounced(
+                                current_session, t_idx, len(trials), tel,
+                                hw_tel=hw_tel,
                             )
 
                             all_keys = self.event.getKeys()
@@ -397,11 +424,9 @@ class GenericWorker:
                             )
                             tel["ui_color"] = "yellow"
                             self._present(renderer, env, cmds, sync_states)
-                            self._push(
-                                self._build_telemetry(
-                                    current_session, t_idx, len(trials), tel,
-                                    hw_tel=hw_tel,
-                                )
+                            self._push_telemetry_debounced(
+                                current_session, t_idx, len(trials), tel,
+                                hw_tel=hw_tel,
                             )
 
                             all_keys = self.event.getKeys()
@@ -471,14 +496,10 @@ class GenericWorker:
                             hw_daemon.send_command(tel["hw_cmd"])
 
                         self._present(renderer, env, cmds, sync_states)
-                        self._push(
-                            self._build_telemetry(
-                                current_session, t_idx + 1, len(trials), tel,
-                                hw_tel=hw_tel,
-                            )
+                        self._push_telemetry_debounced(
+                            current_session, t_idx + 1, len(trials), tel,
+                            hw_tel=hw_tel,
                         )
-                    logger.flush()
-                    logger.flush_kinematics()
 
                 # --- ISI ---
                 if total_sessions == -1 or s_idx < total_sessions - 1:
@@ -499,10 +520,9 @@ class GenericWorker:
                             tel["phase"] = f"ISI ({clock.getTime()-t_isi:.1f}s)"
                             tel["ui_color"] = "orange"
                             self._present(renderer, env, cmds, sync_states)
-                            self._push(
-                                self._build_telemetry(current_session, 0, len(trials), tel, hw_tel=hw_tel)
+                            self._push_telemetry_debounced(
+                                current_session, 0, len(trials), tel, hw_tel=hw_tel
                             )
-                        logger.flush_kinematics()
                 s_idx += 1
 
             logger.flush_kinematics()
@@ -534,7 +554,6 @@ class GenericWorker:
             if hw_daemon:
                 hw_daemon.stop()
             if logger:
-                logger.flush_kinematics()
-                logger.close()
+                logger.shutdown()
             if renderer:
                 renderer.close()

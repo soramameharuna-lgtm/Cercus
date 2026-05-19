@@ -287,7 +287,8 @@ class LoomingParadigm(BaseParadigm):
     def _deg_to_pix(self, deg: float) -> float:
         deg = min(deg, 179.99)
         r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
-        return r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
+        px = r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
+        return min(px, self.per_screen_w_px * 2.0)
 
     def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
         cmds = self._build_stimulus_commands("both", self.init_deg)
@@ -302,7 +303,7 @@ class LoomingParadigm(BaseParadigm):
             },
             "ui_twin": {
                 "side": "—",
-                "radius_ratio": self.init_px / self.per_screen_w_px,
+                "radius_ratio": self._deg_to_pix(self.init_deg) / self.per_screen_w_px,
             },
         }
         return cmds, tel, [0, 0]
@@ -327,12 +328,12 @@ class LoomingParadigm(BaseParadigm):
 
             if elapsed_time >= t_col + 1.0:
                 is_done = True
+            elif elapsed_time >= t_col:
+                theta = self.max_deg
+                phase = "Looming"
             else:
                 delta = max(t_col - elapsed_time, 0.001)
-                if delta > 0.001:
-                    theta = math.degrees(2 * math.atan(lv_s / delta))
-                else:
-                    theta = self.max_deg
+                theta = math.degrees(2 * math.atan(lv_s / delta))
                 theta = min(theta, self.max_deg)
                 phase = "Looming"
                 stim_active = 1
@@ -342,15 +343,17 @@ class LoomingParadigm(BaseParadigm):
                 is_done = True
             else:
                 phase = "Baseline"
-                # side = "both"
+                theta = self.init_deg
                 stim_active = 1
 
         cmds = self._build_stimulus_commands(side, theta)
+
         ui_color = (
             "lime"
             if phase == "Looming"
             else ("orange" if phase == "Baseline" else "cyan")
         )
+        radius_ratio = self._deg_to_pix(theta) / self.per_screen_w_px
         tel = {
             "phase": phase,
             "hw_cmd": hw_cmd,
@@ -362,7 +365,7 @@ class LoomingParadigm(BaseParadigm):
             },
             "ui_twin": {
                 "side": side,
-                "radius_ratio": self._deg_to_pix(theta) / self.per_screen_w_px,
+                "radius_ratio": radius_ratio,
             },
         }
         return is_done, cmds, tel, [stim_active, wind_active]
@@ -498,7 +501,8 @@ class ClassicLoomingParadigm(BaseParadigm):
     def _deg_to_pix(self, deg: float) -> float:
         deg = min(deg, 179.99)
         r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
-        return r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
+        px = r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
+        return min(px, self.per_screen_w_px * 2.0)
 
     @classmethod
     def get_sync_channels(cls) -> List[str]:
@@ -572,7 +576,7 @@ class ClassicLoomingParadigm(BaseParadigm):
             },
             "ui_twin": {
                 "side": "—",
-                "radius_ratio": self.init_px / self.per_screen_w_px,
+                "radius_ratio": self._deg_to_pix(self.init_deg) / self.per_screen_w_px,
             },
         }
         return cmds, tel, [0, 0]
@@ -595,12 +599,11 @@ class ClassicLoomingParadigm(BaseParadigm):
         if elapsed_time >= t_col + 1.0:
             is_done = True
             theta = final_deg
+        elif elapsed_time >= t_col:
+            theta = final_deg
         else:
             delta = max(t_col - elapsed_time, 0.001)
-            if delta > 0.001:
-                theta = math.degrees(2 * math.atan(lv_s / delta))
-            else:
-                theta = final_deg
+            theta = math.degrees(2 * math.atan(lv_s / delta))
             theta = min(theta, final_deg)
             stim_active = 1
 
@@ -786,6 +789,19 @@ class OpticFlowParadigm(BaseParadigm):
         self._colors = np.full((density, 3), 1.0, dtype=np.float64)
         self._opacities = np.ones(density, dtype=np.float64)
 
+        # Pre-allocate per-frame scratch arrays (avoids GC jitter)
+        self._rng = np.random.default_rng()
+        self._rand_buf = np.empty(density, dtype=np.float64)
+        self._annihilated = np.empty(density, dtype=bool)
+        self._noise_mask = np.empty(density, dtype=bool)
+        self._noise_mask[:coh_count] = False
+        self._noise_mask[coh_count:] = True
+        self._mask_right = np.empty(density, dtype=bool)
+        self._mask_left = np.empty(density, dtype=bool)
+        self._mask_top = np.empty(density, dtype=bool)
+        self._mask_bottom = np.empty(density, dtype=bool)
+        self._wrapped = np.empty(density, dtype=bool)
+
         return ""
 
     def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
@@ -833,35 +849,40 @@ class OpticFlowParadigm(BaseParadigm):
         half_h = self.screen_h / 2.0
         coh_count = getattr(self, "_coh_count", density)
 
-        # Frame-level annihilation: 3% chance per frame for all particles
-        annihilated = np.random.random(density) < 0.03
-        noise = np.arange(density) >= coh_count
-        annihilated &= noise  # only noise particles can be annihilated
+        # Frame-level annihilation: 3% chance per frame for noise particles
+        self._rng.random(density, out=self._rand_buf)
+        np.less(self._rand_buf, 0.03, out=self._annihilated)
+        annihilated = self._annihilated
+        annihilated &= self._noise_mask  # only noise particles can be annihilated
         if np.any(annihilated):
-            self._x[annihilated] = np.random.uniform(-half_w, half_w, annihilated.sum())
-            self._y[annihilated] = np.random.uniform(-half_h, half_h, annihilated.sum())
-            new_angles = np.random.uniform(0.0, 360.0, annihilated.sum())
+            n = annihilated.sum()
+            self._x[annihilated] = np.random.uniform(-half_w, half_w, n)
+            self._y[annihilated] = np.random.uniform(-half_h, half_h, n)
+            new_angles = np.random.uniform(0.0, 360.0, n)
             self._dx[annihilated] = np.cos(np.radians(new_angles))
             self._dy[annihilated] = np.sin(np.radians(new_angles))
 
-        # Wrap-around boundary check (in-place)
-        mask_right = self._x > half_w
-        mask_left = self._x < -half_w
-        mask_top = self._y > half_h
-        mask_bottom = self._y < -half_h
-        wrapped = mask_right | mask_left | mask_top | mask_bottom
+        # Wrap-around boundary check (in-place, pre-allocated masks)
+        np.greater(self._x, half_w, out=self._mask_right)
+        np.less(self._x, -half_w, out=self._mask_left)
+        np.greater(self._y, half_h, out=self._mask_top)
+        np.less(self._y, -half_h, out=self._mask_bottom)
+        np.bitwise_or(self._mask_right, self._mask_left, out=self._wrapped)
+        np.bitwise_or(self._wrapped, self._mask_top, out=self._wrapped)
+        np.bitwise_or(self._wrapped, self._mask_bottom, out=self._wrapped)
 
-        self._x[mask_right] -= self.screen_w
-        self._x[mask_left] += self.screen_w
-        self._y[mask_top] -= self.screen_h
-        self._y[mask_bottom] += self.screen_h
+        self._x[self._mask_right] -= self.screen_w
+        self._x[self._mask_left] += self.screen_w
+        self._y[self._mask_top] -= self.screen_h
+        self._y[self._mask_bottom] += self.screen_h
 
         # Re-randomize direction for wrapped noise particles to break visual streaks
-        wrapped_noise = wrapped & noise
-        if np.any(wrapped_noise):
-            new_angles = np.random.uniform(0.0, 360.0, wrapped_noise.sum())
-            self._dx[wrapped_noise] = np.cos(np.radians(new_angles))
-            self._dy[wrapped_noise] = np.sin(np.radians(new_angles))
+        np.bitwise_and(self._wrapped, self._noise_mask, out=self._annihilated)
+        if np.any(self._annihilated):
+            n = self._annihilated.sum()
+            new_angles = np.random.uniform(0.0, 360.0, n)
+            self._dx[self._annihilated] = np.cos(np.radians(new_angles))
+            self._dy[self._annihilated] = np.sin(np.radians(new_angles))
 
         bg = {
             "id": "_bg",
@@ -1252,6 +1273,333 @@ class BlankParadigm(BaseParadigm):
 
 
 # ---------------------------------------------------------------------------
+# Grating Paradigm (Sinusoidal grating, pure-plugin via IoC protocol)
+# ---------------------------------------------------------------------------
+
+
+class GratingParadigm(BaseParadigm):
+    EXPERIMENT_PATTERNS = {
+        "Static Grating": "static_grating",
+        "Drifting Grating": "drifting_grating",
+    }
+
+    def __init__(self, debug_mode: bool = False, config: dict = None):
+        self.config = config or {}
+        self.sf = float(
+            self.config.get(
+                "Spatial Freq (cpd)", self._schema_default("Spatial Freq (cpd)")
+            )
+        )
+        self.tf = float(
+            self.config.get(
+                "Temporal Freq (Hz)", self._schema_default("Temporal Freq (Hz)")
+            )
+        )
+        self.ori = float(
+            self.config.get(
+                "Orientation (°)", self._schema_default("Orientation (°)")
+            )
+        )
+        self.contrast = float(
+            self.config.get("Contrast", self._schema_default("Contrast"))
+        )
+        self.trial_duration = float(
+            self.config.get(
+                "Trial Duration (s)", self._schema_default("Trial Duration (s)")
+            )
+        )
+        self.viewing_distance_cm = float(
+            self.config.get("Viewing Distance (cm)", 30.0)
+        )
+        self.screen_width_cm = float(
+            self.config.get("Screen Width (cm)", 53.0)
+        )
+
+        self.scale = 0.3 if debug_mode else 1.0
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 3840))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+
+        if debug_mode:
+            self.per_screen_w_px = screen_w_px // 6
+            self.c_l = -screen_w_px // 12
+            self.c_r = screen_w_px // 12
+            self.mask_w = screen_w_px // 6
+            self.mask_h = screen_h_px // 3
+        else:
+            self.per_screen_w_px = screen_w_px // 2
+            self.c_l = -(screen_w_px // 4)
+            self.c_r = screen_w_px // 4
+            self.mask_w = screen_w_px // 2
+            self.mask_h = screen_h_px
+
+    @classmethod
+    def get_available_patterns(cls) -> List[str]:
+        return list(cls.EXPERIMENT_PATTERNS.keys())
+
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        return {
+            "Spatial Freq (cpd)": {
+                "type": "float",
+                "default": 0.05,
+                "min": 0.001,
+                "max": 10.0,
+                "label": "Spatial Frequency (cpd)",
+            },
+            "Temporal Freq (Hz)": {
+                "type": "float",
+                "default": 2.0,
+                "min": 0.0,
+                "max": 100.0,
+                "label": "Temporal Frequency (Hz)",
+            },
+            "Orientation (°)": {
+                "type": "float",
+                "default": 0.0,
+                "min": 0.0,
+                "max": 360.0,
+                "label": "Orientation (°)",
+            },
+            "Contrast": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.0,
+                "max": 1.0,
+                "label": "Contrast (0-1)",
+            },
+            "Trial Duration (s)": {
+                "type": "float",
+                "default": 5.0,
+                "min": 0.1,
+                "max": 600.0,
+                "label": "Trial Duration (s)",
+            },
+            "Number of Trials": {
+                "type": "int",
+                "default": 10,
+                "min": 1,
+                "max": 9999,
+                "label": "Number of Trials",
+            },
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual", "Kinematic"],
+                "label": "Execution Mode",
+            },
+        }
+
+    def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
+        n = int(
+            self.config.get(
+                "Number of Trials", self._schema_default("Number of Trials")
+            )
+        )
+        return [
+            {
+                "type": "grating",
+                "trial_idx": i,
+                "sf": self.sf,
+                "tf": self.tf,
+                "ori": self.ori,
+                "contrast": self.contrast,
+                "trial_duration": self.trial_duration,
+            }
+            for i in range(n)
+        ]
+
+    def prepare_trial(self, trial_context: dict) -> str:
+        return ""
+
+    def _deg_to_pix(self, deg: float) -> float:
+        deg = min(deg, 179.99)
+        r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
+        return r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
+
+    def _build_grating_commands(
+        self, phase: float, trial_context: dict
+    ) -> List[dict]:
+        sf = trial_context.get("sf", self.sf)
+        ori = trial_context.get("ori", self.ori)
+        contrast = trial_context.get("contrast", self.contrast)
+
+        w = self.mask_w
+        h = self.mask_h
+
+        return [
+            {
+                "id": "_bg_l",
+                "class_name": "Rect",
+                "init_kwargs": {},
+                "updates": {
+                    "size": [w, h],
+                    "pos": [self.c_l, 0],
+                    "fillColor": [0, 0, 0],
+                    "lineColor": [0, 0, 0],
+                },
+            },
+            {
+                "id": "_bg_r",
+                "class_name": "Rect",
+                "init_kwargs": {},
+                "updates": {
+                    "size": [w, h],
+                    "pos": [self.c_r, 0],
+                    "fillColor": [0, 0, 0],
+                    "lineColor": [0, 0, 0],
+                },
+            },
+            {
+                "id": "stim_l",
+                "class_name": "GratingStim",
+                "init_kwargs": {"tex": "sin", "mask": None},
+                "updates": {
+                    "sf": sf,
+                    "ori": ori,
+                    "phase": phase,
+                    "size": [w, h],
+                    "pos": [self.c_l, 0],
+                    "contrast": contrast,
+                },
+            },
+            {
+                "id": "stim_r",
+                "class_name": "GratingStim",
+                "init_kwargs": {"tex": "sin", "mask": None},
+                "updates": {
+                    "sf": sf,
+                    "ori": ori,
+                    "phase": phase,
+                    "size": [w, h],
+                    "pos": [self.c_r, 0],
+                    "contrast": contrast,
+                },
+            },
+            {
+                "id": "_bezel",
+                "class_name": "Rect",
+                "init_kwargs": {},
+                "updates": {
+                    "size": [100, int(self.mask_h * 1.5)],
+                    "pos": [0, 0],
+                    "fillColor": [-1, -1, -1],
+                    "lineColor": [-1, -1, -1],
+                },
+            },
+        ]
+
+    def _build_ui_twin(self, ori: float, side: str = "both") -> List[dict]:
+        """Build Canvas draw commands representing grating orientation."""
+        items: List[dict] = []
+        centre_y = 75
+        line_half = 50
+
+        rad = math.radians(ori)
+        dx = line_half * math.cos(rad)
+        dy = -line_half * math.sin(rad)
+
+        # Bezel divider
+        items.append(
+            {
+                "cmd": "create_line",
+                "args": [200, 0, 200, 150],
+                "kwargs": {"fill": "#333333", "dash": (4, 2)},
+            }
+        )
+
+        centres: List[int] = []
+        if side in ("left", "both", "—"):
+            centres.append(100)
+        if side in ("right", "both", "—"):
+            centres.append(300)
+
+        for cx in centres:
+            # Orientation line
+            items.append(
+                {
+                    "cmd": "create_line",
+                    "args": [
+                        cx - dx,
+                        centre_y - dy,
+                        cx + dx,
+                        centre_y + dy,
+                    ],
+                    "kwargs": {"fill": "white", "width": 2},
+                }
+            )
+            # Spatial frequency indicator circle
+            sf_safe = max(self.sf, 0.001)
+            r = max(3, min(60, int(4.0 / sf_safe)))
+            items.append(
+                {
+                    "cmd": "create_oval",
+                    "args": [cx - r, centre_y - r, cx + r, centre_y + r],
+                    "kwargs": {"outline": "cyan", "width": 1},
+                }
+            )
+
+        return items
+
+    def get_idle_frame(
+        self, hw_telemetry: dict
+    ) -> Tuple[List[dict], dict, List[int]]:
+        trial_ctx = {
+            "sf": self.sf,
+            "tf": self.tf,
+            "ori": self.ori,
+            "contrast": self.contrast,
+            "trial_duration": self.trial_duration,
+        }
+        cmds = self._build_grating_commands(0.0, trial_ctx)
+        tel = {
+            "phase": "Idle",
+            "hw_cmd": None,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                "sf": self.sf,
+                "tf": self.tf,
+                "ori": self.ori,
+                "contrast": self.contrast,
+                **hw_telemetry,
+            },
+            "ui_twin": self._build_ui_twin(self.ori, "both"),
+        }
+        return cmds, tel, [0, 0]
+
+    def process_frame(
+        self,
+        elapsed_time: float,
+        trial_context: dict,
+        hw_telemetry: dict,
+    ) -> Tuple[bool, List[dict], dict, List[int]]:
+        is_done = elapsed_time >= trial_context["trial_duration"]
+
+        tf = trial_context.get("tf", self.tf)
+        dynamic_phase = (elapsed_time * tf) % 1.0
+
+        cmds = self._build_grating_commands(dynamic_phase, trial_context)
+
+        tel = {
+            "phase": "Grating",
+            "hw_cmd": None,
+            "ui_color": "lime",
+            "ui_metrics": {
+                "sf": trial_context.get("sf", self.sf),
+                "tf": tf,
+                "ori": trial_context.get("ori", self.ori),
+                "contrast": trial_context.get("contrast", self.contrast),
+                "phase_val": round(dynamic_phase, 3),
+                **hw_telemetry,
+            },
+            "ui_twin": self._build_ui_twin(
+                trial_context.get("ori", self.ori), "both"
+            ),
+        }
+        return is_done, cmds, tel, [1, 0]
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -1261,6 +1609,7 @@ PARADIGM_REGISTRY: Dict[str, type] = {
     "OpticFlow": OpticFlowParadigm,
     "MovementTrace": MovementTraceParadigm,
     "Blank": BlankParadigm,
+    "Grating": GratingParadigm,
 }
 
 

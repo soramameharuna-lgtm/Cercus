@@ -1519,6 +1519,24 @@ class MasterDashboard:
         if not twin_cfg:
             return
 
+        # New protocol: list of standard Canvas draw commands
+        if isinstance(twin_cfg, list):
+            for item in twin_cfg:
+                cmd_name = item.get("cmd")
+                if not cmd_name:
+                    continue
+                draw_fn = getattr(self.canvas, cmd_name, None)
+                if draw_fn is None:
+                    continue
+                args = item.get("args", [])
+                kwargs = item.get("kwargs", {})
+                try:
+                    draw_fn(*args, **kwargs)
+                except Exception:
+                    pass
+            return
+
+        # Legacy protocol: dict with "side" and "radius_ratio"
         side = twin_cfg.get("side", "left")
         radius_ratio = twin_cfg.get("radius_ratio", 0.0)
         radius_canvas = min(100, max(2, radius_ratio * 100))

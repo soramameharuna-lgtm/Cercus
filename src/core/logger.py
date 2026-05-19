@@ -1,6 +1,8 @@
 import csv
 import json
 import os
+import queue
+import threading
 from typing import List
 
 import numpy as np
@@ -37,7 +39,13 @@ class GroundTruthLogger:
         self._event_writer = None
         self._kinematics_file = None
         self._kinematics_writer = None
-        self._kin_buffer: List[list] = []
+
+        # Async I/O: dedicated writer thread with queue
+        self._io_queue: queue.Queue = queue.Queue()
+        self._writer_thread = threading.Thread(
+            target=self._io_loop, daemon=True
+        )
+        self._writer_thread.start()
 
     def _load_cache(self) -> int:
         cache_path = os.path.join(self.out, ".trial_cache.txt")
@@ -48,10 +56,41 @@ class GroundTruthLogger:
                 return 0
         return 0
 
-    def _save_cache(self):
-        cache_path = os.path.join(self.out, ".trial_cache.txt")
-        with open(cache_path, "w") as f:
-            f.write(str(self.global_trial_id))
+    # ------------------------------------------------------------------
+    # Writer daemon – consumes all disk-I/O commands off the main thread
+    # ------------------------------------------------------------------
+
+    def _io_loop(self):
+        while True:
+            item = self._io_queue.get()
+            if item is None:  # poison pill
+                break
+            action, payload = item
+            try:
+                if action == "event_row":
+                    if self._event_writer:
+                        self._event_writer.writerow(payload)
+                elif action == "kin_rows":
+                    if self._kinematics_writer:
+                        self._kinematics_writer.writerows(payload)
+                elif action == "flush_event":
+                    if self._event_file:
+                        self._event_file.flush()
+                elif action == "flush_kin":
+                    if self._kinematics_file:
+                        self._kinematics_file.flush()
+                elif action == "save_cache":
+                    cache_path = os.path.join(self.out, ".trial_cache.txt")
+                    with open(cache_path, "w") as f:
+                        f.write(str(payload))
+                elif action == "flush_sync":
+                    payload.set()
+            except Exception:
+                pass  # never crash the writer thread
+
+    # ------------------------------------------------------------------
+    # Public API – all callers stay on the main thread; I/O is queued
+    # ------------------------------------------------------------------
 
     def open_session(self, subject_id: str, session_num: int, kin_headers: list):
         self.close()
@@ -79,7 +118,13 @@ class GroundTruthLogger:
         return self._event_writer is not None and self._kinematics_writer is not None
 
     def close(self):
-        self.flush_kinematics()
+        """Flush pending writes and close current session files (thread stays alive)."""
+        if self._event_writer or self._kinematics_writer:
+            self._io_queue.put(("flush_kin", None))
+            self._io_queue.put(("flush_event", None))
+            done = threading.Event()
+            self._io_queue.put(("flush_sync", done))
+            done.wait(timeout=5.0)
         if self._event_file:
             self._event_file.close()
             self._event_file, self._event_writer = None, None
@@ -87,41 +132,42 @@ class GroundTruthLogger:
             self._kinematics_file.close()
             self._kinematics_file, self._kinematics_writer = None, None
 
+    def shutdown(self):
+        """Final shutdown: flush everything, stop writer thread, close files."""
+        self.close()
+        self._io_queue.put(None)  # poison pill
+        self._writer_thread.join(timeout=5.0)
+
     def advance_trial(self):
         self.trial_in_session += 1
         self.global_trial_id += 1
-        self._save_cache()
+        self._io_queue.put(("save_cache", self.global_trial_id))
 
     def log_event(self, event_name: str, timestamp: float, **details):
         if not self._event_writer:
             return
-        self._event_writer.writerow(
-            [
-                event_name,
-                f"{timestamp:.6f}",
-                self.session_num,
-                self.trial_in_session,
-                self.global_trial_id,
-                json.dumps(details, cls=NumpyEncoder) if details else "",
-            ]
-        )
+        row = [
+            event_name,
+            f"{timestamp:.6f}",
+            self.session_num,
+            self.trial_in_session,
+            self.global_trial_id,
+            json.dumps(details, cls=NumpyEncoder) if details else "",
+        ]
+        self._io_queue.put(("event_row", row))
 
     def log_kinematics_batch(self, items: List[list]):
         if not self._kinematics_writer:
             return
-        self._kin_buffer.extend(items)
+        self._io_queue.put(("kin_rows", items))
 
     def flush_kinematics(self):
-        if self._kin_buffer and self._kinematics_writer:
-            self._kinematics_writer.writerows(self._kin_buffer)
-            self._kin_buffer.clear()
-            self._kinematics_file.flush()
-
-    def kin_buffer_size(self) -> int:
-        return len(self._kin_buffer)
+        self._io_queue.put(("flush_kin", None))
 
     def flush(self):
-        if self._event_file:
-            self._event_file.flush()
-        if self._kinematics_file:
-            self._kinematics_file.flush()
+        """Block until all prior queued writes are flushed to disk."""
+        self._io_queue.put(("flush_event", None))
+        self._io_queue.put(("flush_kin", None))
+        done = threading.Event()
+        self._io_queue.put(("flush_sync", done))
+        done.wait(timeout=5.0)
