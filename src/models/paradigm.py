@@ -1340,6 +1340,11 @@ class GratingParadigm(BaseParadigm):
     @classmethod
     def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
         return {
+            "Single Screen Mode": {
+                "type": "bool",
+                "default": True,
+                "label": "Single Screen Mode",
+            },
             "Spatial Freq (cpd)": {
                 "type": "float",
                 "default": 0.05,
@@ -1400,6 +1405,7 @@ class GratingParadigm(BaseParadigm):
             {
                 "type": "grating",
                 "trial_idx": i,
+                "Single Screen Mode": bool(self.config.get("Single Screen Mode", True)),
                 "sf": self.sf,
                 "tf": self.tf,
                 "ori": self.ori,
@@ -1423,71 +1429,101 @@ class GratingParadigm(BaseParadigm):
         sf = trial_context.get("sf", self.sf)
         ori = trial_context.get("ori", self.ori)
         contrast = trial_context.get("contrast", self.contrast)
+        is_single = trial_context.get("Single Screen Mode", True)
 
-        w = self.mask_w
-        h = self.mask_h
-
-        return [
-            {
-                "id": "_bg_l",
-                "class_name": "Rect",
-                "init_kwargs": {},
-                "updates": {
-                    "size": [w, h],
-                    "pos": [self.c_l, 0],
-                    "fillColor": [0, 0, 0],
-                    "lineColor": [0, 0, 0],
+        if is_single:
+            full_w = self.mask_w * 2
+            h = self.mask_h
+            return [
+                {
+                    "id": "_bg",
+                    "class_name": "Rect",
+                    "init_kwargs": {},
+                    "updates": {
+                        "size": [full_w, h],
+                        "pos": [0, 0],
+                        "fillColor": [0, 0, 0],
+                        "lineColor": [0, 0, 0],
+                    },
                 },
-            },
-            {
-                "id": "_bg_r",
-                "class_name": "Rect",
-                "init_kwargs": {},
-                "updates": {
-                    "size": [w, h],
-                    "pos": [self.c_r, 0],
-                    "fillColor": [0, 0, 0],
-                    "lineColor": [0, 0, 0],
+                {
+                    "id": "stim_full",
+                    "class_name": "GratingStim",
+                    "init_kwargs": {"tex": "sin", "mask": None},
+                    "updates": {
+                        "sf": sf,
+                        "ori": ori,
+                        "phase": phase,
+                        "size": [full_w, h],
+                        "pos": [0, 0],
+                        "contrast": contrast,
+                    },
+                }
+            ]
+        else:
+            w = self.mask_w
+            h = self.mask_h
+            return [
+                {
+                    "id": "_bg_l",
+                    "class_name": "Rect",
+                    "init_kwargs": {},
+                    "updates": {
+                        "size": [w, h],
+                        "pos": [self.c_l, 0],
+                        "fillColor": [0, 0, 0],
+                        "lineColor": [0, 0, 0],
+                    },
                 },
-            },
-            {
-                "id": "stim_l",
-                "class_name": "GratingStim",
-                "init_kwargs": {"tex": "sin", "mask": None},
-                "updates": {
-                    "sf": sf,
-                    "ori": ori,
-                    "phase": phase,
-                    "size": [w, h],
-                    "pos": [self.c_l, 0],
-                    "contrast": contrast,
+                {
+                    "id": "_bg_r",
+                    "class_name": "Rect",
+                    "init_kwargs": {},
+                    "updates": {
+                        "size": [w, h],
+                        "pos": [self.c_r, 0],
+                        "fillColor": [0, 0, 0],
+                        "lineColor": [0, 0, 0],
+                    },
                 },
-            },
-            {
-                "id": "stim_r",
-                "class_name": "GratingStim",
-                "init_kwargs": {"tex": "sin", "mask": None},
-                "updates": {
-                    "sf": sf,
-                    "ori": ori,
-                    "phase": phase,
-                    "size": [w, h],
-                    "pos": [self.c_r, 0],
-                    "contrast": contrast,
+                {
+                    "id": "stim_l",
+                    "class_name": "GratingStim",
+                    "init_kwargs": {"tex": "sin", "mask": None},
+                    "updates": {
+                        "sf": sf,
+                        "ori": ori,
+                        "phase": phase,
+                        "size": [w, h],
+                        "pos": [self.c_l, 0],
+                        "contrast": contrast,
+                    },
                 },
-            },
-            {
-                "id": "_bezel",
-                "class_name": "Rect",
-                "init_kwargs": {},
-                "updates": {
-                    "size": [100, int(self.mask_h * 1.5)],
-                    "pos": [0, 0],
-                    "fillColor": [-1, -1, -1],
-                    "lineColor": [-1, -1, -1],
+                {
+                    "id": "stim_r",
+                    "class_name": "GratingStim",
+                    "init_kwargs": {"tex": "sin", "mask": None},
+                    "updates": {
+                        "sf": sf,
+                        "ori": ori,
+                        "phase": phase,
+                        "size": [w, h],
+                        "pos": [self.c_r, 0],
+                        "contrast": contrast,
+                    },
                 },
-            },
-        ]
+                {
+                    "id": "_bezel",
+                    "class_name": "Rect",
+                    "init_kwargs": {},
+                    "updates": {
+                        "size": [100, int(self.mask_h * 1.5)],
+                        "pos": [0, 0],
+                        "fillColor": [-1, -1, -1],
+                        "lineColor": [-1, -1, -1],
+                    },
+                },
+            ]
 
     def _build_ui_twin(self, ori: float, side: str = "both") -> List[dict]:
         """Build Canvas draw commands representing grating orientation."""
@@ -1545,6 +1581,7 @@ class GratingParadigm(BaseParadigm):
         self, hw_telemetry: dict
     ) -> Tuple[List[dict], dict, List[int]]:
         trial_ctx = {
+            "Single Screen Mode": bool(self.config.get("Single Screen Mode", True)),
             "sf": self.sf,
             "tf": self.tf,
             "ori": self.ori,
