@@ -470,7 +470,7 @@ class CalibrationPanel:
 class MasterDashboard:
     def __init__(self, root: ctk.CTk):
         self.root = root
-        self.root.title("Experiment Controller")
+        self.root.title("Cercus - Experiment Controller")
         self.root.geometry("1200x800")
 
         try:
