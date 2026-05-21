@@ -13,6 +13,8 @@ from src.core.render import CoreRenderer, ScreenEnvironment
 from src.models.paradigm import PARADIGM_REGISTRY
 
 
+adaption_duration: float = 3.0  # seconds
+
 def create_ipc_queues():
     return mp.Queue(maxsize=32), mp.Queue(maxsize=256)
 
@@ -260,7 +262,7 @@ class GenericWorker:
             # --- Adaptation ---
             self.kinematic_engine.reset()
             t0 = clock.getTime()
-            while clock.getTime() - t0 < 5.0:
+            while clock.getTime() - t0 < adaption_duration:
                 self._sync_state()
                 hw_tel = self._drain_hardware(logger, hw_daemon)
                 if hw_daemon and not hw_daemon.is_alive():
