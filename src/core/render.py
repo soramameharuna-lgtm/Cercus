@@ -57,9 +57,10 @@ class CoreRenderer:
                 if mapped == "Circle":
                     return cls(
                         self.win,
-                        edges=128,
+                        edges=cmd.get("edges", 128),
                         fillColor=cmd.get("fillColor", [-1, -1, -1]),
                         lineColor=cmd.get("lineColor", [-1, -1, -1]),
+                        lineWidth=cmd.get("lineWidth", 1.0),
                         colorSpace="rgb",
                     )
                 return cls(self.win)
@@ -130,6 +131,10 @@ class CoreRenderer:
             if "lineColor" in cmd and obj._state_cache.get("lineColor") != cmd["lineColor"]:
                 obj.lineColor = cmd["lineColor"]
                 obj._state_cache["lineColor"] = cmd["lineColor"]
+
+            if "lineWidth" in cmd and obj._state_cache.get("lineWidth") != cmd["lineWidth"]:
+                obj.lineWidth = cmd["lineWidth"]
+                obj._state_cache["lineWidth"] = cmd["lineWidth"]
 
         obj.draw()
 

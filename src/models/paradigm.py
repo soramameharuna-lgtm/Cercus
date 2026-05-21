@@ -143,6 +143,7 @@ class LoomingParadigm(BaseParadigm):
 
         screen_w_px = int(self.config.get("Screen Width (px)", 3840))
         screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+        bezel_width_px = int(self.config.get("Bezel Width (px)", 0))
 
         self.init_deg = 2.0
         self.max_deg = 179.0
@@ -158,9 +159,14 @@ class LoomingParadigm(BaseParadigm):
             self.mask_w = screen_w_px // 6
             self.mask_h = screen_h_px // 3
         else:
+            # ── 视口坐标映射 ──
+            # 3840×1080 Surround: 左屏物理中心 = (-960, 0), 右屏 = (+960, 0)
+            # Bezel 补偿: 拼缝处物理边框使两屏中心各向外偏移 bezel_width_px/2
+            # per_screen_w_px 用于 _deg_to_pix 的 px/cm 换算基准（单屏物理宽度）
             self.per_screen_w_px = screen_w_px // 2
-            self.c_l = -(screen_w_px // 4)
-            self.c_r = screen_w_px // 4
+            half_bezel = bezel_width_px // 2
+            self.c_l = -(screen_w_px // 4 + half_bezel)
+            self.c_r = screen_w_px // 4 + half_bezel
             self.mask_w = screen_w_px // 2
             self.mask_h = screen_h_px
 
@@ -179,6 +185,13 @@ class LoomingParadigm(BaseParadigm):
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
             },
+            "Bezel Width (px)": {
+                "type": "int",
+                "default": 0,
+                "min": 0,
+                "max": 200,
+                "label": "Bezel Width (px)",
+            },
             "note": {
                 "type": "info",
                 "label": "This paradigm has fixed experiment patterns. Select a pattern above.",
@@ -193,14 +206,19 @@ class LoomingParadigm(BaseParadigm):
         r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
         r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
 
+        # PsychoPy RGB 色彩空间: -1 = 纯黑, +1 = 纯白
+        _black = [-1, -1, -1]
+        _white = [1, 1, 1]
+
         bg_l = {
             "id": "_bg_l",
             "type": "rect",
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_l, 0),
-            "fillColor": [0, 0, 0],
-            "lineColor": [0, 0, 0],
+            "fillColor": _black,
+            "lineColor": _black,
+            "lineWidth": 0,
         }
         bg_r = {
             "id": "_bg_r",
@@ -208,24 +226,32 @@ class LoomingParadigm(BaseParadigm):
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_r, 0),
-            "fillColor": [0, 0, 0],
-            "lineColor": [0, 0, 0],
+            "fillColor": _black,
+            "lineColor": _black,
+            "lineWidth": 0,
         }
+        # ── 圆形刺激 ──
+        # edges=256: 高精度多边形拟合，减少大半径下的锯齿
+        # lineWidth=0 + lineColor=fillColor: 双重保险消除描边伪影
         stim_l = {
             "id": "stim_l",
             "type": "circle",
             "radius": r_px_l,
             "pos": (self.c_l, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
+            "fillColor": _white,
+            "lineColor": _white,
+            "lineWidth": 0,
+            "edges": 256,
         }
         stim_r = {
             "id": "stim_r",
             "type": "circle",
             "radius": r_px_r,
             "pos": (self.c_r, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
+            "fillColor": _white,
+            "lineColor": _white,
+            "lineWidth": 0,
+            "edges": 256,
         }
         bezel = {
             "id": "_bezel",
@@ -233,8 +259,9 @@ class LoomingParadigm(BaseParadigm):
             "width": 0,
             "height": self.mask_h * 1.5,
             "pos": (0, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
+            "fillColor": _white,
+            "lineColor": _white,
+            "lineWidth": 0,
         }
 
         if side == "left":
@@ -403,6 +430,7 @@ class ClassicLoomingParadigm(BaseParadigm):
 
         screen_w_px = int(self.config.get("Screen Width (px)", 3840))
         screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+        bezel_width_px = int(self.config.get("Bezel Width (px)", 0))
 
         self.scale = 0.3 if debug_mode else 1.0
 
@@ -413,9 +441,13 @@ class ClassicLoomingParadigm(BaseParadigm):
             self.mask_w = screen_w_px // 6
             self.mask_h = screen_h_px // 3
         else:
+            # ── 视口坐标映射 ──
+            # 3840×1080 Surround: 左屏物理中心 = (-960, 0), 右屏 = (+960, 0)
+            # Bezel 补偿: 拼缝处物理边框使两屏中心各向外偏移 bezel_width_px/2
             self.per_screen_w_px = screen_w_px // 2
-            self.c_l = -(screen_w_px // 4)
-            self.c_r = screen_w_px // 4
+            half_bezel = bezel_width_px // 2
+            self.c_l = -(screen_w_px // 4 + half_bezel)
+            self.c_r = screen_w_px // 4 + half_bezel
             self.mask_w = screen_w_px // 2
             self.mask_h = screen_h_px
 
@@ -461,6 +493,13 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "default": "Auto",
                 "choices": ["Auto", "Manual", "Kinematic"],
                 "label": "Execution Mode",
+            },
+            "Bezel Width (px)": {
+                "type": "int",
+                "default": 0,
+                "min": 0,
+                "max": 200,
+                "label": "Bezel Width (px)",
             },
         }
 
@@ -512,14 +551,19 @@ class ClassicLoomingParadigm(BaseParadigm):
         r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
         r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
 
+        # PsychoPy RGB 色彩空间: -1 = 纯黑, +1 = 纯白
+        _black = [-1, -1, -1]
+        _white = [1, 1, 1]
+
         bg_l = {
             "id": "_bg_l",
             "type": "rect",
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_l, 0),
-            "fillColor": [0, 0, 0],
-            "lineColor": [0, 0, 0],
+            "fillColor": _black,
+            "lineColor": _black,
+            "lineWidth": 0,
         }
         bg_r = {
             "id": "_bg_r",
@@ -527,24 +571,32 @@ class ClassicLoomingParadigm(BaseParadigm):
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_r, 0),
-            "fillColor": [0, 0, 0],
-            "lineColor": [0, 0, 0],
+            "fillColor": _black,
+            "lineColor": _black,
+            "lineWidth": 0,
         }
+        # ── 圆形刺激 ──
+        # edges=256: 高精度多边形拟合，减少大半径下的锯齿
+        # lineWidth=0 + lineColor=fillColor: 双重保险消除描边伪影
         stim_l = {
             "id": "stim_l",
             "type": "circle",
             "radius": r_px_l,
             "pos": (self.c_l, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
+            "fillColor": _white,
+            "lineColor": _white,
+            "lineWidth": 0,
+            "edges": 256,
         }
         stim_r = {
             "id": "stim_r",
             "type": "circle",
             "radius": r_px_r,
             "pos": (self.c_r, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
+            "fillColor": _white,
+            "lineColor": _white,
+            "lineWidth": 0,
+            "edges": 256,
         }
         bezel = {
             "id": "_bezel",
@@ -552,8 +604,9 @@ class ClassicLoomingParadigm(BaseParadigm):
             "width": 0,
             "height": self.mask_h * 1.5,
             "pos": (0, 0),
-            "fillColor": [-1, -1, -1],
-            "lineColor": [-1, -1, -1],
+            "fillColor": _white,
+            "lineColor": _white,
+            "lineWidth": 0,
         }
 
         if side == "left":
