@@ -230,7 +230,7 @@ class LoomingParadigm(BaseParadigm):
         bezel = {
             "id": "_bezel",
             "type": "rect",
-            "width": 100,
+            "width": 0,
             "height": self.mask_h * 1.5,
             "pos": (0, 0),
             "fillColor": [-1, -1, -1],
@@ -549,7 +549,7 @@ class ClassicLoomingParadigm(BaseParadigm):
         bezel = {
             "id": "_bezel",
             "type": "rect",
-            "width": 100,
+            "width": 0,
             "height": self.mask_h * 1.5,
             "pos": (0, 0),
             "fillColor": [-1, -1, -1],
