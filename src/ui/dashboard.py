@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import queue
+import time
 import threading
 import multiprocessing as mp
 from typing import Dict, Any, Optional, List
@@ -1154,15 +1155,15 @@ class MasterDashboard:
             cfg["Trigger Dist (mm)"] = self._safe_float(
                 pv["Trigger Dist (mm)"].get(), 5.0
             )
-            cfg["Trigger Dist Enabled"] = bool(pv["Trigger Dist Enabled"].get())
+            cfg["Trigger Dist Enabled"] = bool(pv["Trigger Dist (mm) Enabled"].get())
             cfg["Trigger Angle (°)"] = self._safe_float(
                 pv["Trigger Angle (°)"].get(), 10.0
             )
-            cfg["Trigger Angle Enabled"] = bool(pv["Trigger Angle Enabled"].get())
+            cfg["Trigger Angle Enabled"] = bool(pv["Trigger Angle (°) Enabled"].get())
             cfg["Trigger Speed (units/s)"] = self._safe_float(
                 pv["Trigger Speed (units/s)"].get(), 0.0
             )
-            cfg["Trigger Speed Enabled"] = bool(pv["Trigger Speed Enabled"].get())
+            cfg["Trigger Speed Enabled"] = bool(pv["Trigger Speed (units/s) Enabled"].get())
 
         return cfg
 
@@ -1204,10 +1205,17 @@ class MasterDashboard:
         """Drain a queue in a daemon thread to avoid blocking the GUI."""
 
         def _drain():
+            empty_streak = 0
             while True:
                 try:
                     q.get(timeout=0.05)
-                except (queue.Empty, ValueError, OSError, EOFError, BrokenPipeError):
+                    empty_streak = 0
+                except queue.Empty:
+                    empty_streak += 1
+                    if empty_streak > 50:
+                        break
+                    time.sleep(0.01)
+                except (ValueError, OSError, EOFError, BrokenPipeError):
                     break
 
         t = threading.Thread(target=_drain, daemon=True)
@@ -1642,7 +1650,7 @@ class MasterDashboard:
         # Trajectory draw
         flat = []
         for px, py in self._trail_points:
-            flat.append(cx_canvas + (px - cx_phys) * scale)
+            flat.append(cx_canvas - (px - cx_phys) * scale)
             flat.append(cy_canvas + (py - cy_phys) * scale)
         canvas.create_line(*flat, fill="cyan", width=2)
 

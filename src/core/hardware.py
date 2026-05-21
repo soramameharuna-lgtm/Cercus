@@ -259,6 +259,8 @@ class MockSerialDaemon:
 
     def _mock_loop(self):
         t_ard = 0
+        period = 0.01
+        next_tick = time.perf_counter() + period
         while self._running:
             t_sys = time.perf_counter() + self._clock_offset
             t_ard += 10
@@ -270,7 +272,8 @@ class MockSerialDaemon:
                 self.data_queue.put_nowait((t_sys, raw))
             except queue.Full:
                 pass
-            time.sleep(0.01)
+            time.sleep(max(0, next_tick - time.perf_counter()))
+            next_tick += period
 
     def send_command(self, cmd: Union[str, bytes]):
         pass

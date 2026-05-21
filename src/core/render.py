@@ -112,7 +112,8 @@ class CoreRenderer:
                 obj._state_cache = {}
 
             if "radius" in cmd and obj._state_cache.get("radius") != cmd["radius"]:
-                obj.radius = cmd["radius"]
+                # 使用 size 替代 radius，通过 GPU 缩放 1x1 的基准包围盒，避免每帧重构顶点导致的严重掉帧
+                obj.size = (cmd["radius"] * 2, cmd["radius"] * 2)
                 obj._state_cache["radius"] = cmd["radius"]
 
             if "pos" in cmd and obj._state_cache.get("pos") != cmd["pos"]:

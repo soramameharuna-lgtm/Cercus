@@ -69,7 +69,6 @@ class GenericWorker:
         self.kinematic_engine = KinematicEngine(
             error_callback=self._kinematic_error_handler
         )
-        self._sustained_speed_above_since = -1.0
 
     def _push_telemetry_debounced(self, session_num: int, trial_idx: int, total_trials: int, data: dict, hw_tel: dict = None):
         now = time.monotonic()
@@ -281,9 +280,11 @@ class GenericWorker:
             renderer.flip()
             # 2) build_prewarm_commands 以 max_deg 半径创建 circle（灰色填充=不可见）
             #    强制 GPU 分配最大尺寸 VBO/纹理，试次首帧仅做轻量属性更新
-            _prewarm = self.paradigm.build_prewarm_commands()
-            renderer.draw_commands(_prewarm)
-            renderer.flip()
+            if hasattr(self.paradigm, "build_prewarm_commands"):
+                _prewarm = self.paradigm.build_prewarm_commands()
+                if _prewarm:
+                    renderer.draw_commands(_prewarm)
+                    renderer.flip()
 
             # --- Adaptation ---
             self.kinematic_engine.reset()
@@ -427,7 +428,6 @@ class GenericWorker:
                     # --- Kinematic wait ---
                     if self.config.get("Execution Mode") == "Kinematic":
                         self.kinematic_engine.reset()
-                        self._sustained_speed_above_since = -1.0
                         trig_dist = float(self.config.get("Trigger Dist (mm)", 5.0))
                         trig_angle = float(self.config.get("Trigger Angle (°)", 10.0))
                         trig_speed = float(self.config.get("Trigger Speed (units/s)", 0.0))
@@ -462,41 +462,12 @@ class GenericWorker:
                                 self.abort_flag = True
                                 raise ExperimentAbort()
 
-                            # AND + short-circuit trigger evaluation
-                            eng = self.kinematic_engine
-                            now_t = eng._last_t if hasattr(eng, '_last_t') else -1.0
-
-                            dist_met = (
-                                (not en_dist)
-                                or trig_dist <= 0.0
-                                or eng.cum_disp >= trig_dist
-                            )
-                            angle_met = (
-                                (not en_angle)
-                                or trig_angle <= 0.0
-                                or abs(eng.cum_dz) >= trig_angle
-                            )
-
-                            # Sustained speed: speed must stay above threshold
-                            # continuously for trig_speed_dur milliseconds
-                            if en_speed and trig_speed > 0.0 and trig_speed_dur > 0.0:
-                                if eng.move_speed < trig_speed:
-                                    self._sustained_speed_above_since = -1.0
-                                elif self._sustained_speed_above_since < 0.0:
-                                    self._sustained_speed_above_since = now_t
-                                speed_met = (
-                                    self._sustained_speed_above_since > 0.0
-                                    and now_t > 0.0
-                                    and (now_t - self._sustained_speed_above_since) * 1000.0
-                                        >= trig_speed_dur
-                                )
-                            elif en_speed and trig_speed > 0.0:
-                                speed_met = eng.move_speed >= trig_speed
-                            else:
-                                speed_met = True
-                                self._sustained_speed_above_since = -1.0
-
-                            if dist_met and angle_met and speed_met:
+                            if self.kinematic_engine.evaluate_trigger(
+                                trig_dist if en_dist else 0.0,
+                                trig_angle if en_angle else 0.0,
+                                trig_speed if en_speed else 0.0,
+                                trig_speed_dur if en_speed else 0.0,
+                            ):
                                 break
 
                     logger.advance_trial()
