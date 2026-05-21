@@ -1639,10 +1639,11 @@ class MasterDashboard:
 
         # Build flat coordinate list [x0,y0, x1,y1, ...] for a single
         # create_line call — O(1) Tk widget creation instead of O(n) loop
+        # Trajectory draw
         flat = []
         for px, py in self._trail_points:
             flat.append(cx_canvas + (px - cx_phys) * scale)
-            flat.append(cy_canvas - (py - cy_phys) * scale)
+            flat.append(cy_canvas + (py - cy_phys) * scale)
         canvas.create_line(*flat, fill="cyan", width=2)
 
         # Current position dot

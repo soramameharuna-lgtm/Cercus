@@ -192,6 +192,18 @@ class LoomingParadigm(BaseParadigm):
                 "max": 200,
                 "label": "Bezel Width (px)",
             },
+            "PD Position (px)": {
+                "type": "str",
+                "default": "1850,1030",
+                "label": "PD Position (px)",
+            },
+            "PD Size (px)": {
+                "type": "int",
+                "default": 60,
+                "min": 10,
+                "max": 200,
+                "label": "PD Size (px)",
+            },
             "note": {
                 "type": "info",
                 "label": "This paradigm has fixed experiment patterns. Select a pattern above.",
@@ -206,9 +218,9 @@ class LoomingParadigm(BaseParadigm):
         r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
         r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
 
-        # PsychoPy RGB 色彩空间: -1 = 纯黑, +1 = 纯白
-        _black = [-1, -1, -1]
-        _white = [1, 1, 1]
+        # ── 色彩空间 (PsychoPy RGB: -1=纯黑, 0=中灰, +1=纯白) ──
+        _gray = [0, 0, 0]       # 中性灰背景
+        _black = [-1, -1, -1]   # 纯黑刺激物
 
         bg_l = {
             "id": "_bg_l",
@@ -216,8 +228,8 @@ class LoomingParadigm(BaseParadigm):
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_l, 0),
-            "fillColor": _black,
-            "lineColor": _black,
+            "fillColor": _gray,
+            "lineColor": _gray,
             "lineWidth": 0,
         }
         bg_r = {
@@ -226,20 +238,20 @@ class LoomingParadigm(BaseParadigm):
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_r, 0),
-            "fillColor": _black,
-            "lineColor": _black,
+            "fillColor": _gray,
+            "lineColor": _gray,
             "lineWidth": 0,
         }
-        # ── 圆形刺激 ──
-        # edges=256: 高精度多边形拟合，减少大半径下的锯齿
-        # lineWidth=0 + lineColor=fillColor: 双重保险消除描边伪影
+        # ── 圆形刺激 (纯黑 Looming Disk) ──
+        # edges=256: 高精度多边形拟合，减少大半径锯齿
+        # lineWidth=0 + lineColor=fillColor: 消除描边伪影
         stim_l = {
             "id": "stim_l",
             "type": "circle",
             "radius": r_px_l,
             "pos": (self.c_l, 0),
-            "fillColor": _white,
-            "lineColor": _white,
+            "fillColor": _black,
+            "lineColor": _black,
             "lineWidth": 0,
             "edges": 256,
         }
@@ -248,8 +260,8 @@ class LoomingParadigm(BaseParadigm):
             "type": "circle",
             "radius": r_px_r,
             "pos": (self.c_r, 0),
-            "fillColor": _white,
-            "lineColor": _white,
+            "fillColor": _black,
+            "lineColor": _black,
             "lineWidth": 0,
             "edges": 256,
         }
@@ -259,8 +271,8 @@ class LoomingParadigm(BaseParadigm):
             "width": 0,
             "height": self.mask_h * 1.5,
             "pos": (0, 0),
-            "fillColor": _white,
-            "lineColor": _white,
+            "fillColor": _gray,
+            "lineColor": _gray,
             "lineWidth": 0,
         }
 
@@ -334,6 +346,28 @@ class LoomingParadigm(BaseParadigm):
             },
         }
         return cmds, tel, [0, 0]
+
+    def build_prewarm_commands(self) -> List[dict]:
+        """Force-allocate GPU buffers at max radius before any trial starts.
+
+        圆形以灰色填充（与背景同色），确保不可见；
+        但 GPU 纹理/VBO 已按最大半径完成分配。
+        后续试次首帧只需轻量属性更新（radius + fillColor）。
+        """
+        _gray = [0, 0, 0]
+        max_r = self._deg_to_pix(self.max_deg)
+        return [
+            {"id": "_bg_l", "type": "rect", "width": self.mask_w, "height": self.mask_h,
+             "pos": (self.c_l, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+            {"id": "_bg_r", "type": "rect", "width": self.mask_w, "height": self.mask_h,
+             "pos": (self.c_r, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+            {"id": "stim_l", "type": "circle", "radius": max_r, "pos": (self.c_l, 0),
+             "fillColor": _gray, "lineColor": _gray, "lineWidth": 0, "edges": 256},
+            {"id": "stim_r", "type": "circle", "radius": max_r, "pos": (self.c_r, 0),
+             "fillColor": _gray, "lineColor": _gray, "lineWidth": 0, "edges": 256},
+            {"id": "_bezel", "type": "rect", "width": 0, "height": self.mask_h * 1.5,
+             "pos": (0, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+        ]
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
@@ -501,6 +535,18 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "max": 200,
                 "label": "Bezel Width (px)",
             },
+            "PD Position (px)": {
+                "type": "str",
+                "default": "1850,1030",
+                "label": "PD Position (px)",
+            },
+            "PD Size (px)": {
+                "type": "int",
+                "default": 60,
+                "min": 10,
+                "max": 200,
+                "label": "PD Size (px)",
+            },
         }
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
@@ -551,9 +597,9 @@ class ClassicLoomingParadigm(BaseParadigm):
         r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
         r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
 
-        # PsychoPy RGB 色彩空间: -1 = 纯黑, +1 = 纯白
-        _black = [-1, -1, -1]
-        _white = [1, 1, 1]
+        # ── 色彩空间 (PsychoPy RGB: -1=纯黑, 0=中灰, +1=纯白) ──
+        _gray = [0, 0, 0]       # 中性灰背景
+        _black = [-1, -1, -1]   # 纯黑刺激物
 
         bg_l = {
             "id": "_bg_l",
@@ -561,8 +607,8 @@ class ClassicLoomingParadigm(BaseParadigm):
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_l, 0),
-            "fillColor": _black,
-            "lineColor": _black,
+            "fillColor": _gray,
+            "lineColor": _gray,
             "lineWidth": 0,
         }
         bg_r = {
@@ -571,20 +617,20 @@ class ClassicLoomingParadigm(BaseParadigm):
             "width": self.mask_w,
             "height": self.mask_h,
             "pos": (self.c_r, 0),
-            "fillColor": _black,
-            "lineColor": _black,
+            "fillColor": _gray,
+            "lineColor": _gray,
             "lineWidth": 0,
         }
-        # ── 圆形刺激 ──
-        # edges=256: 高精度多边形拟合，减少大半径下的锯齿
-        # lineWidth=0 + lineColor=fillColor: 双重保险消除描边伪影
+        # ── 圆形刺激 (纯黑 Looming Disk) ──
+        # edges=256: 高精度多边形拟合，减少大半径锯齿
+        # lineWidth=0 + lineColor=fillColor: 消除描边伪影
         stim_l = {
             "id": "stim_l",
             "type": "circle",
             "radius": r_px_l,
             "pos": (self.c_l, 0),
-            "fillColor": _white,
-            "lineColor": _white,
+            "fillColor": _black,
+            "lineColor": _black,
             "lineWidth": 0,
             "edges": 256,
         }
@@ -593,8 +639,8 @@ class ClassicLoomingParadigm(BaseParadigm):
             "type": "circle",
             "radius": r_px_r,
             "pos": (self.c_r, 0),
-            "fillColor": _white,
-            "lineColor": _white,
+            "fillColor": _black,
+            "lineColor": _black,
             "lineWidth": 0,
             "edges": 256,
         }
@@ -604,8 +650,8 @@ class ClassicLoomingParadigm(BaseParadigm):
             "width": 0,
             "height": self.mask_h * 1.5,
             "pos": (0, 0),
-            "fillColor": _white,
-            "lineColor": _white,
+            "fillColor": _gray,
+            "lineColor": _gray,
             "lineWidth": 0,
         }
 
@@ -633,6 +679,28 @@ class ClassicLoomingParadigm(BaseParadigm):
             },
         }
         return cmds, tel, [0, 0]
+
+    def build_prewarm_commands(self) -> List[dict]:
+        """Force-allocate GPU buffers at max radius before any trial starts.
+
+        圆形以灰色填充（与背景同色），确保不可见；
+        但 GPU 纹理/VBO 已按最大半径完成分配。
+        后续试次首帧只需轻量属性更新（radius + fillColor）。
+        """
+        _gray = [0, 0, 0]
+        max_r = self._deg_to_pix(self.max_deg)
+        return [
+            {"id": "_bg_l", "type": "rect", "width": self.mask_w, "height": self.mask_h,
+             "pos": (self.c_l, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+            {"id": "_bg_r", "type": "rect", "width": self.mask_w, "height": self.mask_h,
+             "pos": (self.c_r, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+            {"id": "stim_l", "type": "circle", "radius": max_r, "pos": (self.c_l, 0),
+             "fillColor": _gray, "lineColor": _gray, "lineWidth": 0, "edges": 256},
+            {"id": "stim_r", "type": "circle", "radius": max_r, "pos": (self.c_r, 0),
+             "fillColor": _gray, "lineColor": _gray, "lineWidth": 0, "edges": 256},
+            {"id": "_bezel", "type": "rect", "width": 0, "height": self.mask_h * 1.5,
+             "pos": (0, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+        ]
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict

@@ -257,7 +257,33 @@ class GenericWorker:
             )
 
             sync_topology: List[Dict[str, Any]] = self.config.get("Sync Topology", [])
-            env = ScreenEnvironment(renderer.win, sync_topology)
+
+            # ── 光电块位置参数化 ──
+            # PD Position (px): "x,y" 绝对像素坐标 (从屏幕左上角)
+            # PD Size (px): 光电块边长
+            pd_pos = None
+            pd_raw = self.config.get("PD Position (px)", "")
+            if pd_raw and isinstance(pd_raw, str) and "," in pd_raw:
+                try:
+                    parts = pd_raw.split(",")
+                    pd_pos = (float(parts[0].strip()), float(parts[1].strip()))
+                except (ValueError, IndexError):
+                    pd_pos = None
+            pd_size = int(self.config.get("PD Size (px)", 60))
+
+            env = ScreenEnvironment(renderer.win, sync_topology, pd_pos=pd_pos, pd_size=pd_size)
+
+            # --- Pre-warm: GPU 显存预分配 ---
+            # 1) get_idle_frame 创建基础对象（bg rects, bezel, 小半径 circle）
+            _warm_cmds, _, _warm_sync = self.paradigm.get_idle_frame({})
+            renderer.draw_commands(_warm_cmds)
+            env.render(_warm_sync)
+            renderer.flip()
+            # 2) build_prewarm_commands 以 max_deg 半径创建 circle（灰色填充=不可见）
+            #    强制 GPU 分配最大尺寸 VBO/纹理，试次首帧仅做轻量属性更新
+            _prewarm = self.paradigm.build_prewarm_commands()
+            renderer.draw_commands(_prewarm)
+            renderer.flip()
 
             # --- Adaptation ---
             self.kinematic_engine.reset()

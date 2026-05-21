@@ -69,7 +69,11 @@ class GroundTruthLogger:
             try:
                 if action == "event_row":
                     if self._event_writer:
-                        self._event_writer.writerow(payload)
+                        # payload: (event_name, ts, session, trial, gid, details_dict)
+                        # json.dumps 在后台线程执行，不阻塞渲染主线程
+                        *head, details = payload
+                        row = [*head, json.dumps(details, cls=NumpyEncoder) if details else ""]
+                        self._event_writer.writerow(row)
                 elif action == "kin_rows":
                     if self._kinematics_writer:
                         self._kinematics_writer.writerows(payload)
@@ -144,17 +148,18 @@ class GroundTruthLogger:
         self._io_queue.put(("save_cache", self.global_trial_id))
 
     def log_event(self, event_name: str, timestamp: float, **details):
+        """Enqueue an event row.  Serialization is deferred to the I/O thread."""
         if not self._event_writer:
             return
-        row = [
+        # 主线程仅打包原始数据，不做 json.dumps；序列化在 _io_loop 后台完成
+        self._io_queue.put(("event_row", (
             event_name,
             f"{timestamp:.6f}",
             self.session_num,
             self.trial_in_session,
             self.global_trial_id,
-            json.dumps(details, cls=NumpyEncoder) if details else "",
-        ]
-        self._io_queue.put(("event_row", row))
+            details,  # raw dict — _io_loop will serialize
+        )))
 
     def log_kinematics_batch(self, items: List[list]):
         if not self._kinematics_writer:

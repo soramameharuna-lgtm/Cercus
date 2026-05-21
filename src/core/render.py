@@ -12,7 +12,8 @@ class CoreRenderer:
             size=win_size,
             fullscr=is_fullscr,
             screen=screen_id,
-            color=[-1, -1, -1],
+            # 中性灰背景 (PsychoPy RGB: 0 = 中灰, -1 = 纯黑, +1 = 纯白)
+            color=[0, 0, 0],
             colorSpace="rgb",
             units="pix",
             waitBlanking=wait_blanking,
@@ -154,13 +155,14 @@ class CoreRenderer:
 
 
 class ScreenEnvironment:
-    """Manages 4 fixed sync blocks at screen bottom-left and bottom-right."""
+    """Manages 4 fixed sync blocks at screen bottom-left and bottom-right,
+    plus one parameterizable photodiode marker block."""
 
-    def __init__(self, win, sync_topology: list):
+    def __init__(self, win, sync_topology: list, pd_pos=None, pd_size=60):
         self.win = win
         from psychopy import visual
 
-        w, h = 60, 60
+        w, h = pd_size, pd_size
         win_w, win_h = win.size
         half_w = win_w / 2.0
         half_h = win_h / 2.0
@@ -169,7 +171,8 @@ class ScreenEnvironment:
         self._frame_counter = 0
         self._sync_blocks: list[visual.Rect] = []
 
-        # 强制物理坐标：左外、左内、右内、右外
+        # ── 4 个同步块：物理坐标锚定在屏幕底边 ──
+        # 左外、左内、右内、右外
         positions = [
             (-half_w + margin + w / 2, -half_h + margin + h / 2),
             (-half_w + margin + w * 1.5 + margin, -half_h + margin + h / 2),
@@ -182,6 +185,23 @@ class ScreenEnvironment:
                 fillColor=[-1, -1, -1], lineColor=[-1, -1, -1], colorSpace="rgb"
             )
             self._sync_blocks.append(sb)
+
+        # ── 光电二极管标记块（Photodiode Marker）──
+        # 位置参数化：通过配置指定绝对像素坐标 (从屏幕左上角原点)
+        # 转换到 PsychoPy 坐标系 (中心原点): x - half_w, half_h - y
+        if pd_pos is not None:
+            pd_x, pd_y = pd_pos
+            psy_x = pd_x - half_w
+            psy_y = half_h - pd_y
+        else:
+            # 默认：左屏右下角 (约 x=1850, y=1030 在 3840×1080 下)
+            psy_x = -half_w + margin + w * 1.5 + margin
+            psy_y = -half_h + margin + h / 2
+        self._pd_block = visual.Rect(
+            win, width=w, height=h, pos=(psy_x, psy_y),
+            fillColor=[-1, -1, -1], lineColor=[-1, -1, -1], colorSpace="rgb"
+        )
+        self._pd_last_color = [-1, -1, -1]
 
     def render(self, sync_states: list[int]):
         self._frame_counter += 1
@@ -207,3 +227,13 @@ class ScreenEnvironment:
                 sb.lineColor = color
                 sb._last_color = color
             sb.draw()
+
+        # ── 光电块：绝对最后绘制，不被任何图层遮挡 ──
+        # sync_states[0] = stim_active → 亮; 否则灭
+        pd_on = sync_states[0] if len(sync_states) > 0 else 0
+        pd_color = on if pd_on else off
+        if self._pd_last_color != pd_color:
+            self._pd_block.fillColor = pd_color
+            self._pd_block.lineColor = pd_color
+            self._pd_last_color = pd_color
+        self._pd_block.draw()
