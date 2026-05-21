@@ -387,11 +387,15 @@ class LoomingParadigm(BaseParadigm):
             init_rad = math.radians(self.init_deg / 2)
             t_col = lv_s / math.tan(init_rad) if math.tan(init_rad) != 0 else 0
 
+            # 严格依据时间轴进行状态切片
             if elapsed_time >= t_col + 1.0:
                 is_done = True
+                phase = "PostLooming_End"
             elif elapsed_time >= t_col:
                 theta = self.max_deg
-                phase = "Looming"
+                # 越过 TTC=0 瞬间，发射特征 Phase 触发 Worker 记录
+                phase = "Collision_TTC0"
+                stim_active = 1
             else:
                 delta = max(t_col - elapsed_time, 0.001)
                 theta = math.degrees(2 * math.atan(lv_s / delta))
@@ -412,7 +416,9 @@ class LoomingParadigm(BaseParadigm):
         ui_color = (
             "lime"
             if phase == "Looming"
-            else ("orange" if phase == "Baseline" else "cyan")
+            else ("yellow" if phase == "Collision_TTC0"
+            else ("red" if phase == "PostLooming_End"
+            else ("orange" if phase == "Baseline" else "cyan")))
         )
         radius_ratio = self._deg_to_pix(theta) / self.per_screen_w_px
         tel = {
@@ -716,23 +722,30 @@ class ClassicLoomingParadigm(BaseParadigm):
         is_done = False
         theta = init_deg
         stim_active = 0
+        phase = "Trial"
 
+        # 严格依据时间轴进行相变切片
         if elapsed_time >= t_col + 1.0:
             is_done = True
             theta = final_deg
+            phase = "PostLooming_End"
         elif elapsed_time >= t_col:
             theta = final_deg
+            phase = "Collision_TTC0"
         else:
             delta = max(t_col - elapsed_time, 0.001)
             theta = math.degrees(2 * math.atan(lv_s / delta))
             theta = min(theta, final_deg)
+            phase = "Looming"
             stim_active = 1
 
         cmds = self._build_stimulus_commands(side, theta)
+        ui_color = "lime" if phase == "Looming" else "cyan"
+
         tel = {
-            "phase": "Looming",
+            "phase": phase,
             "hw_cmd": None,
-            "ui_color": "lime",
+            "ui_color": ui_color,
             "ui_metrics": {
                 "theta": round(theta, 1),
                 "side": side,

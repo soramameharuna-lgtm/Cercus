@@ -477,6 +477,9 @@ class GenericWorker:
                     if init_cmd:
                         hw_daemon.send_command(init_cmd)
 
+                    # 状态追踪器初始化
+                    current_phase = "TrialStart"
+
                     # --- Trial frame loop ---
                     while True:
                         self._sync_state()
@@ -491,6 +494,17 @@ class GenericWorker:
                         if is_done:
                             break
 
+                        # 泛型相变记录：当 paradigm 返回的 phase 发生变化时记录时间戳
+                        new_phase = tel.get("phase", "Unknown")
+                        if new_phase != current_phase:
+                            logger.log_event(
+                                "phase_transition",
+                                clock.getTime(),
+                                from_phase=current_phase,
+                                to_phase=new_phase
+                            )
+                            current_phase = new_phase
+
                         if tel.get("hw_cmd"):
                             hw_daemon.send_command(tel["hw_cmd"])
 
@@ -499,6 +513,9 @@ class GenericWorker:
                             current_session, t_idx + 1, len(trials), tel,
                             hw_tel=hw_tel,
                         )
+
+                    # [新增] 精确记录试次终止时间
+                    logger.log_event("trial_stop", clock.getTime())
 
                 # --- ISI ---
                 if total_sessions == -1 or s_idx < total_sessions - 1:
