@@ -32,15 +32,24 @@ class KinematicsParser:
         return ["sys_time"] + [h for _, _, h in self._field_defs] + ["global_trial_id"]
 
     @staticmethod
-    def _safe_int(val: str, default: int = 0) -> int:
+    def _safe_int(val: str, default: int = 0):
         try:
             return int(val)
         except (ValueError, TypeError):
-            return default
+            return None
 
-    def _parse_fields(self, raw: str) -> list:
+    def _parse_fields(self, raw: str):
         parts = raw.split(",")
-        return [self._safe_int(parts[i], d) if i < len(parts) else d for i, d, _ in self._field_defs]
+        out = []
+        for i, d, _ in self._field_defs:
+            if i < len(parts):
+                v = self._safe_int(parts[i], d)
+                if v is None:
+                    return None
+                out.append(v)
+            else:
+                out.append(d)
+        return out
 
     def _apply_calibration(self, fields: list) -> list:
         out = list(fields)
@@ -80,18 +89,24 @@ class KinematicsParser:
         """
         self._calib_matrix = [row[:] for row in matrix]
 
-    def parse(self, sys_time: float, raw: str, g_id: int) -> list:
+    def parse(self, sys_time: float, raw: str, g_id: int):
         raw = raw.strip()
         if not raw:
             return None
-        fields = self._apply_calibration(self._parse_fields(raw))
+        fields = self._parse_fields(raw)
+        if fields is None:
+            return None
+        fields = self._apply_calibration(fields)
         return [f"{sys_time:.6f}"] + fields + [g_id]
 
-    def get_telemetry(self, raw: str) -> dict:
+    def get_telemetry(self, raw: str):
         raw = raw.strip()
         if not raw:
-            return {h: 0.0 for _, _, h in self._field_defs}
-        fields = self._apply_calibration(self._parse_fields(raw))
+            return None
+        fields = self._parse_fields(raw)
+        if fields is None:
+            return None
+        fields = self._apply_calibration(fields)
         keys = [h for _, _, h in self._field_defs]
         return dict(zip(keys, fields))
 

@@ -80,9 +80,11 @@ class GroundTruthLogger:
                 elif action == "flush_event":
                     if self._event_file:
                         self._event_file.flush()
+                        os.fsync(self._event_file.fileno())
                 elif action == "flush_kin":
                     if self._kinematics_file:
                         self._kinematics_file.flush()
+                        os.fsync(self._kinematics_file.fileno())
                 elif action == "save_cache":
                     cache_path = os.path.join(self.out, ".trial_cache.txt")
                     with open(cache_path, "w") as f:
@@ -128,7 +130,7 @@ class GroundTruthLogger:
             self._io_queue.put(("flush_event", None))
             done = threading.Event()
             self._io_queue.put(("flush_sync", done))
-            done.wait(timeout=5.0)
+            done.wait()
         if self._event_file:
             self._event_file.close()
             self._event_file, self._event_writer = None, None
@@ -140,7 +142,7 @@ class GroundTruthLogger:
         """Final shutdown: flush everything, stop writer thread, close files."""
         self.close()
         self._io_queue.put(None)  # poison pill
-        self._writer_thread.join(timeout=5.0)
+        self._writer_thread.join()
 
     def advance_trial(self):
         self.trial_in_session += 1
@@ -175,4 +177,4 @@ class GroundTruthLogger:
         self._io_queue.put(("flush_kin", None))
         done = threading.Event()
         self._io_queue.put(("flush_sync", done))
-        done.wait(timeout=5.0)
+        done.wait()

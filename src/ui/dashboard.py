@@ -944,7 +944,7 @@ class MasterDashboard:
         exec_mode = self._param_vars.get("Execution Mode")
         if exec_mode and exec_mode.get() == "Kinematic":
             _KINEMATIC_PARAMS = [
-                ("Trigger Duration (ms)", 500.0, "Trigger Duration (ms):"),
+                ("Trigger Duration (ms)", 2000.0, "Trigger Duration (ms):"),
                 ("Trigger Dist (mm)", 5.0, "Trigger Dist (mm):"),
                 ("Trigger Angle (°)", 10.0, "Trigger Angle (°):"),
                 ("Trigger Speed (units/s)", 0.0, "Trigger Speed (units/s):"),
@@ -960,15 +960,22 @@ class MasterDashboard:
                 lbl.grid(row=row, column=0, sticky="w", padx=10, pady=4)
                 self._param_widgets.append(lbl)
 
+                default_enabled = (key == "Trigger Speed (units/s)")
+
                 var = ctk.StringVar(value=str(default))
                 self._param_vars[key] = var
-                entry = ctk.CTkEntry(self._param_frame, textvariable=var, width=100)
+                entry = ctk.CTkEntry(
+                    self._param_frame,
+                    textvariable=var,
+                    width=100,
+                    state="normal" if (key not in _CHECKBOX_KEYS or default_enabled) else "disabled",
+                )
                 entry.grid(row=row, column=1, sticky="w", padx=10, pady=4)
                 self._param_widgets.append(entry)
 
                 if key in _CHECKBOX_KEYS:
                     en_key = f"{key} Enabled"
-                    en_var = ctk.BooleanVar(value=True)
+                    en_var = ctk.BooleanVar(value=default_enabled)
                     self._param_vars[en_key] = en_var
                     cb = ctk.CTkCheckBox(
                         self._param_frame,
@@ -1150,7 +1157,7 @@ class MasterDashboard:
         pv = self._param_vars
         if "Trigger Duration (ms)" in pv:
             cfg["Trigger Duration (ms)"] = self._safe_float(
-                pv["Trigger Duration (ms)"].get(), 500.0
+                pv["Trigger Duration (ms)"].get(), 2000.0
             )
             cfg["Trigger Dist (mm)"] = self._safe_float(
                 pv["Trigger Dist (mm)"].get(), 5.0
@@ -1391,7 +1398,6 @@ class MasterDashboard:
             while not self.telemetry_queue.empty():
                 try:
                     data = self.telemetry_queue.get_nowait()
-                    batch_count += 1
                     action = data.get("action")
 
                     if action == "telemetry":
@@ -1399,13 +1405,6 @@ class MasterDashboard:
                     elif action in ["worker_done", "worker_abort", "worker_error"]:
                         terminal_event = data
                         salvaged_event = data
-
-                    if batch_count > 100:
-                        self.status_label.configure(
-                            text="Warning: UI Telemetry Lag Detected",
-                            text_color="orange",
-                        )
-                        break
                 except (queue.Empty, ValueError, OSError, EOFError):
                     break
 

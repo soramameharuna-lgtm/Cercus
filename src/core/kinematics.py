@@ -29,6 +29,11 @@ class KinematicEngine:
         # scratch for evaluate_trigger (avoids local vars)
         "_trig_dist_sq",
         "_trig_angle_abs",
+        # frame-rate buffering for dt folding protection
+        "_buf_dt",
+        "_buf_dx",
+        "_buf_dy",
+        "_buf_dz",
     )
 
     def __init__(self, error_callback: Optional[Callable[[str, str, object], None]] = None):
@@ -42,9 +47,13 @@ class KinematicEngine:
         self._pos_y = 0.0
         self._ready = False
         self._speed_above_since = -1.0
-        self._speed_threshold_active = 0.0
+        self._speed_threshold_active = -1.0
         self._trig_dist_sq = 0.0
         self._trig_angle_abs = 0.0
+        self._buf_dt = 0.0
+        self._buf_dx = 0.0
+        self._buf_dy = 0.0
+        self._buf_dz = 0.0
 
     # ------------------------------------------------------------------
     # Public read-only properties (no allocation — just attribute access)
@@ -95,7 +104,11 @@ class KinematicEngine:
         self._pos_y = 0.0
         self._ready = True
         self._speed_above_since = -1.0
-        self._speed_threshold_active = 0.0
+        self._speed_threshold_active = -1.0
+        self._buf_dt = 0.0
+        self._buf_dx = 0.0
+        self._buf_dy = 0.0
+        self._buf_dz = 0.0
 
     # ------------------------------------------------------------------
     # Update — called every frame with raw hardware telemetry
@@ -111,20 +124,28 @@ class KinematicEngine:
             dy: incremental y displacement.
             dz: incremental z displacement (turning axis).
         """
-        # --- dirty-data guard ---
+        # --- dirty-data guard (rejects entire sample) ---
         if not self._finite(t) or not self._finite(dx) or not self._finite(dy) or not self._finite(dz):
             if self._error_cb:
                 self._error_cb("data_anomaly", "non-finite telemetry value", (t, dx, dy, dz))
             return
 
-        # --- first frame: just record baseline time ---
+        # --- spatial accumulation (unconditional — timing cannot block this) ---
+        self._cum_dz += dz
+        self._pos_x += dx
+        self._pos_y += dy
+        step_dist = math.sqrt(dx * dx + dy * dy)
+        if self._ready:
+            self._cum_disp += step_dist
+
+        # --- first frame: record baseline time, skip speed calculation ---
         if self._last_t < 0.0:
             self._last_t = t
             return
 
         dt = t - self._last_t
 
-        # --- timing guard ---
+        # --- timing guard: only blocks speed buffering, not spatial data ---
         if dt <= 0.0 or dt > 1.0:
             if self._error_cb:
                 self._error_cb("timing_error", f"dt={dt:.6f} out of range", (self._last_t, t))
@@ -133,30 +154,45 @@ class KinematicEngine:
 
         self._last_t = t
 
-        # cumulative turning angle (dz is already calibrated by parser)
-        self._cum_dz += dz
+        # --- frame-rate buffering: accumulate raw deltas, skip speed update
+        #     until >= 5ms of wall time has elapsed (dt folding protection) ---
+        self._buf_dt += dt
+        self._buf_dx += dx
+        self._buf_dy += dy
+        self._buf_dz += dz
 
-        # 2-D position tracking
-        self._pos_x += dx
-        self._pos_y += dy
+        if self._buf_dt < 0.005:
+            return
+
+        # use buffered values for speed calculation
+        bdt = self._buf_dt
+        self._buf_dt = 0.0
 
         # turning speed: dz / dt (degrees per second)
-        self._turn_speed = dz / dt
+        self._turn_speed = self._buf_dz / bdt
+        self._buf_dz = 0.0
 
         # instantaneous movement speed: sqrt(dx^2 + dy^2) / dt
-        step_dist = math.sqrt(dx * dx + dy * dy)
-        self._move_speed = step_dist / dt
+        step_dist = math.sqrt(self._buf_dx * self._buf_dx + self._buf_dy * self._buf_dy)
+        self._move_speed = step_dist / bdt
+        self._buf_dx = 0.0
+        self._buf_dy = 0.0
 
         # sustained-speed tracking: update crossing timestamp
-        if self._speed_threshold_active > 0.0:
-            if self._move_speed < self._speed_threshold_active:
-                self._speed_above_since = -1.0
-            elif self._speed_above_since < 0.0:
-                self._speed_above_since = t
+        if self._speed_threshold_active >= 0.0:
+            if self._speed_threshold_active == 0.0:
+                # stationary trigger: any movement resets the timer
+                if self._move_speed > 0.0:
+                    self._speed_above_since = -1.0
+                elif self._speed_above_since < 0.0:
+                    self._speed_above_since = t
+            else:
+                # motion trigger: speed dropping below threshold resets the timer
+                if self._move_speed < self._speed_threshold_active:
+                    self._speed_above_since = -1.0
+                elif self._speed_above_since < 0.0:
+                    self._speed_above_since = t
 
-        # ready-phase cumulative displacement (L2 norm of this step)
-        if self._ready:
-            self._cum_disp += step_dist
 
     # ------------------------------------------------------------------
     # Trigger evaluation — zero-allocation boolean check
@@ -166,7 +202,7 @@ class KinematicEngine:
         self,
         threshold_dist: float,
         threshold_angle: float,
-        threshold_speed: float = 0.0,
+        threshold_speed: float = -1.0,
         speed_duration_ms: float = 0.0,
     ) -> bool:
         """Check whether motion exceeds any configured threshold.
@@ -191,14 +227,14 @@ class KinematicEngine:
                 return True
 
         # sustained-speed trigger
-        if threshold_speed > 0.0 and speed_duration_ms > 0.0:
+        if threshold_speed >= 0.0 and speed_duration_ms > 0.0:
             self._speed_threshold_active = threshold_speed
             if self._speed_above_since > 0.0 and self._last_t > 0.0:
                 elapsed_ms = (self._last_t - self._speed_above_since) * 1000.0
                 if elapsed_ms >= speed_duration_ms:
                     return True
         else:
-            self._speed_threshold_active = 0.0
+            self._speed_threshold_active = -1.0
 
         return False
 

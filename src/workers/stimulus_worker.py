@@ -143,14 +143,21 @@ class GenericWorker:
 
             for sys_t, raw in items:
                 tel = self.parser.get_telemetry(raw)
+                if tel is None:
+                    continue
+                # ard_time is in milliseconds from Arduino; convert to seconds
+                _ard = tel.get("ard_time")
+                t_sec = float(_ard) / 1000.0 if _ard is not None else float(sys_t)
                 self.kinematic_engine.update(
-                    float(sys_t),
+                    t_sec,
                     float(tel.get("dx", 0.0)),
                     float(tel.get("dy", 0.0)),
                     float(tel.get("dz", 0.0)),
                 )
 
-            self._last_tel_data = self.parser.get_telemetry(items[-1][1])
+            last_tel = self.parser.get_telemetry(items[-1][1])
+            if last_tel is not None:
+                self._last_tel_data = last_tel
 
         return self._inject_kinematics(self._last_tel_data)
 
@@ -465,14 +472,18 @@ class GenericWorker:
                             if self.kinematic_engine.evaluate_trigger(
                                 trig_dist if en_dist else 0.0,
                                 trig_angle if en_angle else 0.0,
-                                trig_speed if en_speed else 0.0,
+                                trig_speed if en_speed else -1.0,
                                 trig_speed_dur if en_speed else 0.0,
                             ):
                                 break
 
+                    # Reset dual-clock drift before next trial
+                    hw_daemon._clock_offset = clock.getTime() - time.perf_counter()
+
                     logger.advance_trial()
                     logger.log_event("trial_start", clock.getTime(), **trial)
                     self.kinematic_engine.reset()
+                    hw_daemon.flush_input()
                     t_trial = clock.getTime()
                     if init_cmd:
                         hw_daemon.send_command(init_cmd)
@@ -491,8 +502,6 @@ class GenericWorker:
                         is_done, cmds, tel, sync_states = self.paradigm.process_frame(
                             elap, trial, hw_tel
                         )
-                        if is_done:
-                            break
 
                         # 泛型相变记录：当 paradigm 返回的 phase 发生变化时记录时间戳
                         new_phase = tel.get("phase", "Unknown")
@@ -513,6 +522,9 @@ class GenericWorker:
                             current_session, t_idx + 1, len(trials), tel,
                             hw_tel=hw_tel,
                         )
+
+                        if is_done:
+                            break
 
                     # [新增] 精确记录试次终止时间
                     logger.log_event("trial_stop", clock.getTime())
@@ -568,6 +580,7 @@ class GenericWorker:
                     pass
 
             if hw_daemon:
+                hw_daemon.flush_input()
                 hw_daemon.stop()
             if logger:
                 logger.shutdown()

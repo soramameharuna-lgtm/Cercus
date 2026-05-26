@@ -40,7 +40,7 @@ class CalibrationWorker:
         STATE_CALIB_Z: 2,
     }
 
-    NOISE_THRESHOLD = 2  # deadband: raw deltas below this are treated as zero
+    NOISE_THRESHOLD = 0  # no deadband: accumulate all raw deltas
 
     def __init__(self, config: Dict[str, Any], cmd_q: mp.Queue, telemetry_q: mp.Queue):
         self.config = config
@@ -122,30 +122,17 @@ class CalibrationWorker:
 
                 for _, raw in hw_daemon.drain_queue():
                     parts = raw.strip().split(",")
-                    if len(parts) >= 4:
-                        try:
-                            dx = int(parts[1])
-                        except (ValueError, TypeError):
-                            dx = 0
-                        try:
-                            dy = int(parts[2])
-                        except (ValueError, TypeError):
-                            dy = 0
-                        try:
-                            dz = int(parts[3])
-                        except (ValueError, TypeError):
-                            dz = 0
-                        # Deadband: suppress sensor noise below threshold
-                        thr = self.NOISE_THRESHOLD
-                        if abs(dx) <= thr:
-                            dx = 0
-                        if abs(dy) <= thr:
-                            dy = 0
-                        if abs(dz) <= thr:
-                            dz = 0
-                        self._raw_dx += dx
-                        self._raw_dy += dy
-                        self._raw_dz += dz
+                    if len(parts) < 4:
+                        continue
+                    try:
+                        dx = int(parts[1])
+                        dy = int(parts[2])
+                        dz = int(parts[3])
+                    except (ValueError, TypeError):
+                        continue
+                    self._raw_dx += dx
+                    self._raw_dy += dy
+                    self._raw_dz += dz
 
                 now = time.monotonic()
                 if now - last_push >= 0.033:
