@@ -147,7 +147,7 @@ class GenericWorker:
                     continue
                 # ard_time is in milliseconds from Arduino; convert to seconds
                 _ard = tel.get("ard_time")
-                t_sec = float(_ard) / 1000.0 if _ard is not None else float(sys_t)
+                t_sec = float(_ard) / 1000.0 if (_ard is not None and float(_ard) > 0.0) else float(sys_t)
                 self.kinematic_engine.update(
                     t_sec,
                     float(tel.get("dx", 0.0)),

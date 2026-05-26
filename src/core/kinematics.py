@@ -182,7 +182,7 @@ class KinematicEngine:
         if self._speed_threshold_active >= 0.0:
             if self._speed_threshold_active == 0.0:
                 # stationary trigger: any movement resets the timer
-                if self._move_speed > 0.0:
+                if self._move_speed > 1.0:
                     self._speed_above_since = -1.0
                 elif self._speed_above_since < 0.0:
                     self._speed_above_since = t
@@ -229,7 +229,7 @@ class KinematicEngine:
         # sustained-speed trigger
         if threshold_speed >= 0.0 and speed_duration_ms > 0.0:
             self._speed_threshold_active = threshold_speed
-            if self._speed_above_since > 0.0 and self._last_t > 0.0:
+            if self._speed_above_since >= 0.0 and self._last_t >= 0.0:
                 elapsed_ms = (self._last_t - self._speed_above_since) * 1000.0
                 if elapsed_ms >= speed_duration_ms:
                     return True
