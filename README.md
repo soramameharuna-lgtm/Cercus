@@ -1,76 +1,227 @@
-# Cercus - User Guide
+# Cercus
 
-**Cercus** is a multiprocess, closed-loop stimulus control framework designed for high-temporal-precision behavioral and neuroscience experiments. Built on a Master-Worker architecture, it physically decouples UI scheduling, visual rendering, hardware telemetry, and data persistence.
+**Cercus** is a multiprocess, closed-loop stimulus control framework for high-temporal-precision behavioral and neuroscience experiments. Built on a Master-Worker architecture, it physically decouples UI scheduling, visual rendering, hardware telemetry, and data persistence.
 
-## 1. Architecture Overview
+---
 
-The system enforces strict unidirectional data flow and functional isolation:
+# Part I — Researcher User Guide
 
-- **Master Dashboard (`dashboard.py`)**: A non-blocking GUI responsible for parameter configuration, dynamic form generation, and low-frequency status monitoring.
-- **Pure Logic Core (`paradigm.py`)**: A mathematical modeling layer. It processes time deltas and hardware feedback to output standardized rendering instruction streams and telemetry states.
-- **Stateless Renderer (`core_render.py`)**: Executes basic geometric drawing instructions (e.g., `circle`, `rect`, `element_array`) without maintaining state.
-- **Asynchronous Hardware Daemon (`core_hardware.py`)**: Handles high-frequency sensor data acquisition and TTL trigger signal dispatch.
-- **Dual-Track Logger (`core_logger.py`)**: Separates high-frequency kinematics telemetry from low-frequency experimental state transitions.
+## 1. Overview
 
-## 2. Core Features & Execution Modes
+Cercus enforces strict unidirectional data flow and functional isolation between four subsystems:
 
-- **Dual-Track Execution Mode**:
-  - **Auto**: Continuously executes the entire session automatically based on randomized ITI/ISI intervals.
-  - **Manual**: After the ITI, the renderer safely suspends and waits for external input (`Space` bar) to precisely trigger a single trial.
-- **Digital Twin Monitor**: The master UI includes a miniature monitor that maps the physical dual-screen stimulus state proportionally.
-- **Hardware Fallback**: If no hardware is available, the serial port can be configured to `mock` to inject a virtual data stream for debugging.
+- **Master Dashboard** (`src/ui/dashboard.py`): A non-blocking GUI for parameter configuration, dynamic form generation, and real-time status monitoring.
+- **Pure Logic Core** (`src/models/paradigm.py`): A mathematical modeling layer that processes time deltas and hardware feedback to output standardized rendering instruction streams.
+- **Stateless Renderer** (`src/core/render.py`): Executes basic geometric drawing instructions (`circle`, `rect`, `element_array`) without maintaining state.
+- **Asynchronous Hardware Daemon** (`src/core/hardware.py`): Handles high-frequency sensor data acquisition and TTL trigger signal dispatch.
+- **Dual-Track Logger** (`src/core/logger.py`): Separates high-frequency kinematics telemetry from low-frequency experimental state transitions.
 
-## 3. Built-in Paradigms
+### Execution Modes
 
-Four standard paradigm matrices are currently built-in and can be dynamically loaded and configured via the dashboard:
+| Mode | Behavior |
+|---|---|
+| **Auto** | Continuously executes the entire session automatically based on randomized ITI/ISI intervals. |
+| **Manual** | After the ITI, the renderer safely suspends and waits for external input (`Space` bar) to trigger a single trial. |
+| **Kinematic** | The trial starts automatically once a kinematic trigger condition is met (e.g., movement distance, angle, or speed threshold). Thresholds are configured in the dashboard. |
 
-1. **Multimodal Looming (Looming Paradigm)**:
-   - Includes pure visual and pure wind baselines.
-   - Contains 7 calibrated visuo-tactile multisensory stimuli with gradient wind field triggers from TTC -373ms to +200ms.
-2. **Classic Visual Looming (ClassicLooming Paradigm)**:
-   - Pure visual parameterized model. Supports dynamic configuration of `l/v Ratio`, initial/final degrees, and left/right presentation logic.
-3. **Optic Flow (OpticFlow Paradigm)**:
-   - Vectorized dot-motion model. Configurable speed, density, coherence, and direction.
-4. **Movement Trace (MovementTrace Paradigm)**:
-   - Lissajous trajectory tracking. Configurable X/Y frequency, amplitude, and trail length.
+## 2. Quick Start
 
-## 4. Installation & Execution
+Install dependencies in an isolated virtual environment (e.g., Conda):
 
-Run the system within an isolated virtual environment (e.g., Conda). Install dependencies:
-
-Bash
-
-```
+```bash
 pip install -r requirements.txt
 ```
 
 Launch the dashboard:
 
-Bash
-
-```
+```bash
 python main.py
 ```
 
-## 5. Data Output Specifications
+## 3. Built-in Paradigms
 
-Dual-track record files are automatically generated in the `data/` directory, strictly aligned via `global_trial_id` and timestamps:
+The following paradigms are built-in and can be dynamically loaded via the dashboard dropdown:
 
-1. `{Subject}_session_{n}_events.csv`: Logs low-frequency control flow events and parameter details.
-2. `{Subject}_session_{n}_kinematics.csv`: Logs high-frequency closed-loop telemetry data.
+| Paradigm | Description |
+|---|---|
+| **Looming** | Multi-modal looming stimulus with visual + wind field. Includes pure visual and pure wind baselines, plus 7 calibrated visuo-tactile conditions with gradient wind triggers from TTC -373ms to +200ms. |
+| **ClassicLooming** | Pure visual parameterized looming model. Supports dynamic configuration of l/v ratio, initial/final degrees, and left/right presentation logic. |
+| **OpticFlow** | Vectorized dot-motion model. Configurable speed, density, coherence, and direction. |
+| **MovementTrace** | Lissajous trajectory tracking. Configurable X/Y frequency, amplitude, and trail length. |
+| **Grating** | Sinusoidal grating stimulus. Supports static and drifting modes with configurable spatial frequency, temporal frequency, orientation, and contrast. |
+| **SingleLooming** | Single-screen centered looming stimulus. Same multi-modal conditions as Looming but designed for single-display setups. |
+| **Blank** | No stimulus — hardware tracking only. Useful for baseline recordings. |
 
-## 6. Extension: Adding New Paradigms
+## 4. Physical Calibration
 
-New experimental paradigms can be introduced without modifying the underlying rendering or control flow code. Implement the following in `src/models/paradigm.py`:
+The dashboard right-side panel provides a **Physical Calibration** system for decoupling three-axis sensor cross-talk.
 
-1. **Inherit Base Class**: Create a new class inheriting from `BaseParadigm`.
-2. **Define UI Mapping Interfaces**:
-   - `get_available_patterns(cls)`: Return a list of supported pattern names.
-   - `get_parameter_schema(cls)`: Declare the dynamic UI parameter configuration dictionary. The framework uses the `type` field (e.g., `int`, `float`, `choice`, `bool`) to generate the dashboard form and injects values into the instance context.
-3. **Implement Core Lifecycle**:
-   - `generate_trials(self, pattern_key)`: Construct and return the trial contexts (`List[dict]`) for the session based on the selected pattern.
-   - `prepare_trial(self, trial_context)`: Return hardware initialization serial commands before a trial starts (or an empty string).
-   - `get_idle_frame(self, hw_telemetry)`: Return steady-state rendering instructions for ITI/ISI phases as `(cmds, telemetry_dict, sync_states)`.
-   - `process_frame(self, elapsed_time, trial_context, hw_telemetry)`: The frame-level closed-loop calculation core. Return the state tuple `(is_done, cmds, telemetry_dict, sync_states)` based on the timestamp and hardware telemetry.
-4. **Standardized Instructions**: The `cmds` returned must use standardized dictionaries supported by the renderer (e.g., `type="rect"`, `type="element_array"`, with `pos`, `colors`, `sizes`).
-5. **Global Registration**: Add the new class to the `PARADIGM_REGISTRY` dictionary at the bottom of `src/models/paradigm.py` to enable dashboard parsing.
+### Workflow
+
+1. Click **Enter Calibration** to activate the calibration worker (the stimulus worker will be shut down).
+2. Set **Radius (mm)** — the known radius of the calibration sphere.
+3. Set **Rotations** — the number of full rotations to record per axis.
+4. Click **Calibrate X** (or Y / Z). Roll the sphere strictly in the **positive** direction for that axis. Click **Stop Axis** when done.
+5. Repeat for all three axes. The raw vector and target distance for each axis will be displayed.
+6. Once all three axes are complete, click **Apply Matrix**. The system computes a 3x3 decoupling matrix via `inverse(raw_matrix) * target_matrix` and saves it to `calibration_cfg.json` in the project root.
+7. The matrix is automatically loaded on subsequent launches and injected into the hardware daemon.
+
+Alternatively, you can manually edit the 3x3 matrix entries in the **Manual Calibration Matrix** grid and click **Save/Update Manual Parameters**.
+
+## 5. Modifying Default Parameters
+
+You can permanently change default values by editing source files directly. This eliminates the need to re-enter the same parameters every time you launch the dashboard.
+
+### Change the default-loaded paradigm
+
+Open `src/models/paradigm.py` and scroll to the `PARADIGM_REGISTRY` dictionary at the bottom of the file:
+
+```python
+PARADIGM_REGISTRY: Dict[str, type] = {
+    "Looming": LoomingParadigm,
+    "ClassicLooming": ClassicLoomingParadigm,
+    "OpticFlow": OpticFlowParadigm,
+    "MovementTrace": MovementTraceParadigm,
+    "Blank": BlankParadigm,
+    "Grating": GratingParadigm,
+    "SingleLooming": SingleLoomingParadigm,
+}
+```
+
+The dashboard defaults to the **first key** in this dictionary. Move your most-used paradigm to the first position. For example, to default to `Grating`:
+
+```python
+PARADIGM_REGISTRY: Dict[str, type] = {
+    "Grating": GratingParadigm,           # <-- now the default
+    "Looming": LoomingParadigm,
+    ...
+}
+```
+
+### Change global default parameters (Subject ID, Resolution, ITI/ISI, etc.)
+
+Open `src/ui/dashboard.py` and find the `_create_widgets` method. Search for the corresponding `ctk.StringVar(value="...")` and change the value string. Common examples:
+
+| Parameter | Line (approx.) | Current Default | Change To |
+|---|---|---|---|
+| Subject ID | `self.subject_var = ctk.StringVar(value="cricket_001")` | `"cricket_001"` | Your lab's subject ID |
+| Resolution | `self.resolution_var = ctk.StringVar(value="3840,1080")` | `"3840,1080"` | Your screen resolution (e.g. `"1920,1080"`) |
+| ITI Range | `self.iti_range_var = ctk.StringVar(value="60-90")` | `"60-90"` | Your inter-trial interval (e.g. `"30-45"`) |
+| ISI Range | `self.isi_range_var = ctk.StringVar(value="300-600")` | `"300-600"` | Your inter-session interval |
+| Viewing Distance | `self.viewing_distance_var = ctk.StringVar(value="30.0")` | `"30.0"` | Your viewing distance in cm |
+| Screen Width (cm) | `self.screen_width_cm_var = ctk.StringVar(value="53.0")` | `"53.0"` | Your screen physical width in cm |
+
+### Change paradigm-specific parameters (contrast, spatial frequency, speed, etc.)
+
+Open `src/models/paradigm.py` and find the target paradigm class. Inside that class, locate the `get_parameter_schema(cls)` method. Each parameter is a dictionary entry — change the `"default"` value. Example for Grating spatial frequency:
+
+```python
+"Spatial Freq (cpd)": {
+    "type": "float",
+    "default": 0.05,      # <-- change this to your desired default
+    "min": 0.001,
+    "max": 10.0,
+    "label": "Spatial Frequency (cpd)",
+},
+```
+
+## 6. Data Output
+
+Dual-track record files are automatically generated in the `data/` directory, aligned via `global_trial_id` and timestamps:
+
+1. **`{Subject}_session_{n}_events.csv`** — Low-frequency experimental state events. Columns: `event_name`, `timestamp`, `session_num`, `trial_in_session`, `global_trial_id`, `details` (JSON).
+2. **`{Subject}_session_{n}_kinematics.csv`** — High-frequency closed-loop telemetry. Columns: `sys_time`, `ard_time`, `dx`, `dy`, `dz`, `stim_state`, `global_trial_id`.
+
+Both files share `global_trial_id` as the join key for cross-referencing trial-level events with frame-level kinematics.
+
+---
+
+# Part II — Developer Guide
+
+## 1. Adding New Paradigms
+
+New experimental paradigms can be added without modifying the rendering engine or control flow code. All development is confined to `src/models/paradigm.py`.
+
+### Step 1: Inherit Base Class
+
+Create a new class inheriting from `BaseParadigm`:
+
+```python
+from src.models.paradigm import BaseParadigm
+
+class MyParadigm(BaseParadigm):
+    ...
+```
+
+### Step 2: Define UI Mapping Interfaces
+
+- **`get_available_patterns(cls)`**: Return a list of supported pattern names (shown in the dashboard Pattern dropdown).
+
+```python
+@classmethod
+def get_available_patterns(cls) -> List[str]:
+    return ["My Pattern A", "My Pattern B"]
+```
+
+- **`get_parameter_schema(cls)`**: Declare the dynamic UI parameter dictionary. The framework reads the `type` field to auto-generate dashboard form widgets. Supported types: `int`, `float`, `str`, `choice`, `bool`, `info`, `filepath`.
+
+```python
+@classmethod
+def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+    return {
+        "Speed (deg/s)": {
+            "type": "float",
+            "default": 30.0,
+            "min": 0.1,
+            "max": 1000.0,
+            "label": "Speed (deg/s)",
+        },
+        "Execution Mode": {
+            "type": "choice",
+            "default": "Auto",
+            "choices": ["Auto", "Manual", "Kinematic"],
+            "label": "Execution Mode",
+        },
+    }
+```
+
+### Step 3: Implement Core Lifecycle
+
+- **`generate_trials(self, pattern_key)`**: Construct and return the trial contexts (`List[dict]`) for the session based on the selected pattern.
+
+- **`prepare_trial(self, trial_context)`**: Return hardware initialization serial commands before a trial starts (or an empty string `""`).
+
+- **`get_idle_frame(self, hw_telemetry)`**: Return steady-state rendering instructions for ITI/ISI phases as `(cmds, telemetry_dict, sync_states)`.
+
+- **`process_frame(self, elapsed_time, trial_context, hw_telemetry)`**: The frame-level closed-loop calculation core. Return the state tuple `(is_done, cmds, telemetry_dict, sync_states)` based on the timestamp and hardware telemetry.
+
+### Step 4: Standardized Rendering Instructions
+
+The `cmds` list returned by lifecycle methods must use dictionaries with these supported `type` values:
+
+| Type | Key Parameters |
+|---|---|
+| `circle` | `radius`, `pos`, `fillColor`, `lineColor`, `lineWidth`, `edges` |
+| `rect` | `width`, `height`, `pos`, `fillColor`, `lineColor`, `lineWidth` |
+| `element_array` | `n_elements`, `xys`, `sizes`, `colors`, `opacities` |
+
+Color values use PsychoPy RGB convention: `-1` = black, `0` = mid-gray, `+1` = white.
+
+### Step 5: Global Registration
+
+Add the new class to the `PARADIGM_REGISTRY` dictionary at the bottom of `src/models/paradigm.py`:
+
+```python
+PARADIGM_REGISTRY: Dict[str, type] = {
+    "Looming": LoomingParadigm,
+    "ClassicLooming": ClassicLoomingParadigm,
+    "OpticFlow": OpticFlowParadigm,
+    "MovementTrace": MovementTraceParadigm,
+    "Blank": BlankParadigm,
+    "Grating": GratingParadigm,
+    "SingleLooming": SingleLoomingParadigm,
+    "MyParadigm": MyParadigm,  # <-- register here
+}
+```
+
+The paradigm will appear in the dashboard dropdown on the next launch.
