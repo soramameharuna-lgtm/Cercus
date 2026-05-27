@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import math
 import queue
 import time
 import threading
@@ -511,6 +512,7 @@ class MasterDashboard:
         self._trail_max_x: float = 0.0
         self._trail_min_y: float = 0.0
         self._trail_max_y: float = 0.0
+        self._trail_last_angle: float = 0.0
         self._create_widgets()
         self._load_default_config()
         self.refresh_dynamic_parameters()
@@ -1606,6 +1608,10 @@ class MasterDashboard:
                     self._trail_max_y = float(py)
             self._draw_trajectory()
 
+        try:
+            self._trail_last_angle = float(ui_metrics.get('k_angle', 0.0))
+        except (ValueError, TypeError):
+            self._trail_last_angle = 0.0
         self._lbl_kin_angle.configure(text=f"θ: {ui_metrics.get('k_angle', '—')}")
         self._lbl_kin_turn.configure(text=f"ω: {ui_metrics.get('k_turn_speed', '—')}")
         self._lbl_kin_disp.configure(text=f"D: {ui_metrics.get('k_disp', '—')}")
@@ -1653,10 +1659,46 @@ class MasterDashboard:
             flat.append(cy_canvas + (py - cy_phys) * scale)
         canvas.create_line(*flat, fill="cyan", width=2)
 
-        # Current position dot
+        # Current position Arrow
         lx = flat[-2]
         ly = flat[-1]
-        canvas.create_oval(lx - 3, ly - 3, lx + 3, ly + 3, fill="white", outline="")
+
+        rad = math.radians(getattr(self, '_trail_last_angle', 0.0))
+
+        # 物理坐标系下的向量 (Forward: dy=1, Right: dx=1)
+        phys_dir_x = math.sin(rad)
+        phys_dir_y = math.cos(rad)
+        phys_right_x = math.cos(rad)
+        phys_right_y = -math.sin(rad)
+
+        # 映射到 Canvas UI 坐标系 (X轴反向，Y轴反向)
+        canvas_dir_x = phys_dir_x
+        canvas_dir_y = -phys_dir_y
+        canvas_right_x = phys_right_x
+        canvas_right_y = -phys_right_y
+
+        # 箭头几何参数 (像素)
+        L = 6  # 尖端长度
+        B = 5  # 尾部向后长度
+        W = 4  # 尾部侧向半宽
+        N = 2  # 尾部凹槽向后长度
+
+        tip_x = lx + canvas_dir_x * L
+        tip_y = ly + canvas_dir_y * L
+
+        br_x = lx - canvas_dir_x * B + canvas_right_x * W
+        br_y = ly - canvas_dir_y * B + canvas_right_y * W
+
+        notch_x = lx - canvas_dir_x * N
+        notch_y = ly - canvas_dir_y * N
+
+        bl_x = lx - canvas_dir_x * B - canvas_right_x * W
+        bl_y = ly - canvas_dir_y * B - canvas_right_y * W
+
+        canvas.create_polygon(
+            tip_x, tip_y, br_x, br_y, notch_x, notch_y, bl_x, bl_y,
+            fill="white", outline="cyan", width=1
+        )
 
     def _reset_trajectory(self):
         self._trail_points = []
@@ -1665,6 +1707,7 @@ class MasterDashboard:
         self._trail_max_x = 0.0
         self._trail_min_y = 0.0
         self._trail_max_y = 0.0
+        self._trail_last_angle = 0.0
         self._traj_canvas.delete("all")
         self._lbl_kin_angle.configure(text="θ: —")
         self._lbl_kin_turn.configure(text="ω: —")
