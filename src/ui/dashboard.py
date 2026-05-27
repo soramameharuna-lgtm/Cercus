@@ -1126,9 +1126,9 @@ class MasterDashboard:
 
         exec_mode = paradigm_params.get("Execution Mode", "Auto")
         total_sessions = (
-            self._safe_int(self.session_total_var.get(), 2)
-            if exec_mode == "Auto"
-            else -1
+            -1
+            if exec_mode == "Manual"
+            else self._safe_int(self.session_total_var.get(), 2)
         )
 
         cfg: Dict[str, Any] = {
