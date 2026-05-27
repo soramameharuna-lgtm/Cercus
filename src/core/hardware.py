@@ -306,6 +306,14 @@ class MockSerialDaemon:
                 break
         return items
 
+    def flush_input(self):
+            """丢弃模拟队列中尚未处理的数据"""
+            while not self.data_queue.empty():
+                try:
+                    self.data_queue.get_nowait()
+                except queue.Empty:
+                    break
+
     def is_alive(self) -> bool:
         return self._running
 
