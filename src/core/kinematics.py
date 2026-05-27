@@ -34,6 +34,7 @@ class KinematicEngine:
         "_buf_dx",
         "_buf_dy",
         "_buf_dz",
+        "_radius_mm",
     )
 
     def __init__(self, error_callback: Optional[Callable[[str, str, object], None]] = None):
@@ -54,6 +55,7 @@ class KinematicEngine:
         self._buf_dx = 0.0
         self._buf_dy = 0.0
         self._buf_dz = 0.0
+        self._radius_mm = 30.0
 
     # ------------------------------------------------------------------
     # Public read-only properties (no allocation — just attribute access)
@@ -109,6 +111,7 @@ class KinematicEngine:
         self._buf_dx = 0.0
         self._buf_dy = 0.0
         self._buf_dz = 0.0
+        self._radius_mm = 30.0
 
     # ------------------------------------------------------------------
     # Update — called every frame with raw hardware telemetry
@@ -131,9 +134,14 @@ class KinematicEngine:
             return
 
         # --- spatial accumulation (unconditional — timing cannot block this) ---
-        self._cum_dz += dz
-        self._pos_x += dx
-        self._pos_y += dy
+        # dz is arc length (mm) on 30mm radius sphere → convert to degrees
+        self._cum_dz += math.degrees(dz / self._radius_mm)
+        rad = math.radians(self._cum_dz)
+        # 将体坐标系增量投影至全局坐标系
+        dx_glob = dx * math.cos(rad) + dy * math.sin(rad)
+        dy_glob = -dx * math.sin(rad) + dy * math.cos(rad)
+        self._pos_x += dx_glob
+        self._pos_y += dy_glob
         step_dist = math.sqrt(dx * dx + dy * dy)
         if self._ready:
             self._cum_disp += step_dist
@@ -161,15 +169,15 @@ class KinematicEngine:
         self._buf_dy += dy
         self._buf_dz += dz
 
-        if self._buf_dt < 0.005:
+        if self._buf_dt < 0.030:
             return
 
         # use buffered values for speed calculation
         bdt = self._buf_dt
         self._buf_dt = 0.0
 
-        # turning speed: dz / dt (degrees per second)
-        self._turn_speed = self._buf_dz / bdt
+        # turning speed: convert buffered arc length (mm) to degrees, then divide by dt
+        self._turn_speed = math.degrees(self._buf_dz / self._radius_mm) / bdt
         self._buf_dz = 0.0
 
         # instantaneous movement speed: sqrt(dx^2 + dy^2) / dt
