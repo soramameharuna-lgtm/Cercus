@@ -207,6 +207,99 @@ The `cmds` list returned by lifecycle methods must use dictionaries with these s
 
 Color values use PsychoPy RGB convention: `-1` = black, `0` = mid-gray, `+1` = white.
 
+#### Sync Block Protocol (Photodiode Markers)
+
+> **Architecture Note**: The legacy `ScreenEnvironment` class has been deprecated. The low-level `CoreRenderer` (`src/core/render.py`) maintains **zero awareness** of photodiode markers or sync blocks — it blindly draws whatever `cmds` it receives. All sync logic is fully owned by the paradigm layer and expressed entirely through the returned instruction packets.
+
+Every paradigm is responsible for appending the correct number of photodiode sync blocks to its `cmds` list. The framework provides `BaseParadigm._build_sync_markers(is_active, mode)` as a shared utility, but paradigms may implement their own coordinate logic if needed.
+
+**Rule 1 — Clock & Frame Tracking**
+
+The paradigm class must maintain an internal frame counter to drive the frame-rate flash indicator. Reset `self._frame_counter = 0` in `prepare_trial` (or during trial initialization), and increment it on every `process_frame` call:
+
+```python
+def prepare_trial(self, trial_context):
+    self._frame_counter = 0  # reset at trial start
+    return ""
+
+def process_frame(self, elapsed_time, trial_context, hw_telemetry):
+    self._frame_counter += 1
+    # ...
+```
+
+The counter powers the flash toggle: `odd = self._frame_counter % 2 == 1`.
+
+**Rule 2 — Channel Physical Alignment**
+
+| Screen Mode | Block Count | Layout |
+|---|---|---|
+| **Dual (Surround)** | 4 | Left-bottom outer, left-bottom inner, right-bottom inner, right-bottom outer |
+| **Single** | 2 | Bottom-right corner: inner (trial state) + outer (frame flash), side-by-side |
+
+- **Dual-screen paradigms** must append 4 sync blocks: the outermost blocks flash with frame rate, the inner blocks stay solid to indicate trial activation state.
+- **Single-screen paradigms** must append exactly 2 sync blocks, both tightly placed in the bottom-right corner — the inner block shows trial state (solid), the outer block flashes with the frame rate.
+
+```python
+# Single-screen: call in process_frame / get_idle_frame
+sync = self._build_sync_markers(stim_active, "single")
+# Dual-screen: call in process_frame / get_idle_frame
+sync = self._build_sync_markers(stim_active, "dual")
+```
+
+**Rule 3 — Layer Stacking Order**
+
+All sync / photodiode `rect` commands **must be placed at the very end** of the `cmds` list. This guarantees they render on the absolute top layer and are never occluded by stimulus backgrounds, masks, or overlays.
+
+```python
+cmds = []  # stimulus drawing commands
+cmds.append({...})  # circle, rect, element_array, etc.
+
+# --- sync blocks MUST be appended last ---
+sync = self._build_sync_markers(is_active, "single")  # or "dual"
+cmds.extend(sync)
+return cmds
+```
+
+**Reference Implementation** (`BaseParadigm._build_sync_markers`):
+
+```python
+def _build_sync_markers(self, is_active: bool, mode: str) -> list[dict]:
+    off, on = [-1, -1, -1], [1, 1, 1]  # PsychoPy RGB
+    odd = (self._frame_counter % 2 == 1)
+    margin, w, h = 10, 60, 60
+    half_w, half_h = self._win_w / 2.0, self._win_h / 2.0
+
+    if mode == "single":
+        # 2 blocks: bottom-right corner, side-by-side
+        flash_color = on if (is_active and odd) else off
+        active_color = on if is_active else off
+        positions = [
+            (half_w - margin - w * 1.5 - margin, -half_h + margin + h / 2),  # inner
+            (half_w - margin - w / 2, -half_h + margin + h / 2),              # outer
+        ]
+        colors = [active_color, flash_color]
+    elif mode == "dual":
+        # 4 blocks: left-bottom pair + right-bottom pair
+        outer_color = on if (is_active and odd) else off
+        inner_color = on if is_active else off
+        positions = [
+            (-half_w + margin + w / 2, -half_h + margin + h / 2),
+            (-half_w + margin + w * 1.5 + margin, -half_h + margin + h / 2),
+            (half_w - margin - w * 1.5 - margin, -half_h + margin + h / 2),
+            (half_w - margin - w / 2, -half_h + margin + h / 2),
+        ]
+        colors = [outer_color, inner_color, inner_color, outer_color]
+
+    cmds = []
+    for i, (pos, color) in enumerate(zip(positions, colors)):
+        cmds.append({
+            "id": f"_sync_{i}", "type": "rect",
+            "width": w, "height": h, "pos": pos,
+            "fillColor": color, "lineColor": color, "lineWidth": 0,
+        })
+    return cmds
+```
+
 ### Step 5: Global Registration
 
 Add the new class to the `PARADIGM_REGISTRY` dictionary at the bottom of `src/models/paradigm.py`:

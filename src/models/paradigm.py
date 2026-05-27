@@ -71,14 +71,63 @@ class BaseParadigm(ABC):
     def prepare_trial(self, trial_context: dict) -> str:
         pass
 
+    def _build_sync_markers(self, is_active: bool, mode: str) -> List[dict]:
+        """Generate photodiode sync marker Rect commands.
+
+        mode: "dual" for 4 markers (dual-screen), "single" for 2 markers (single-screen)
+        """
+        margin = 10
+        w, h = 60, 60
+        half_w = self._win_w / 2.0
+        half_h = self._win_h / 2.0
+        odd = self._frame_counter % 2 == 1
+
+        on = [1, 1, 1]
+        off = [-1, -1, -1]
+
+        if mode == "dual":
+            outer_color = on if (is_active and odd) else off
+            inner_color = on if is_active else off
+            positions = [
+                (-half_w + margin + w / 2, -half_h + margin + h / 2),
+                (-half_w + margin + w * 1.5 + margin, -half_h + margin + h / 2),
+                (half_w - margin - w * 1.5 - margin, -half_h + margin + h / 2),
+                (half_w - margin - w / 2, -half_h + margin + h / 2),
+            ]
+            colors = [outer_color, inner_color, inner_color, outer_color]
+        elif mode == "single":
+            flash_color = on if (is_active and odd) else off
+            active_color = on if is_active else off
+            positions = [
+                (half_w - margin - w * 1.5 - margin, -half_h + margin + h / 2),
+                (half_w - margin - w / 2, -half_h + margin + h / 2),
+            ]
+            colors = [active_color, flash_color]
+        else:
+            return []
+
+        cmds = []
+        for i, (pos, color) in enumerate(zip(positions, colors)):
+            cmds.append({
+                "id": f"_sync_{i}",
+                "type": "rect",
+                "width": w,
+                "height": h,
+                "pos": pos,
+                "fillColor": color,
+                "lineColor": color,
+                "lineWidth": 0,
+            })
+        return cmds
+
     @abstractmethod
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
         pass
 
     @abstractmethod
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         pass
 
 
@@ -151,6 +200,9 @@ class LoomingParadigm(BaseParadigm):
         self._baseline_post = 1.5
 
         self.scale = 0.3 if debug_mode else 1.0
+        self._win_w = screen_w_px // 3 if debug_mode else screen_w_px
+        self._win_h = screen_h_px // 2 if debug_mode else screen_h_px
+        self._frame_counter = 0
 
         if debug_mode:
             self.per_screen_w_px = screen_w_px // 6
@@ -159,10 +211,6 @@ class LoomingParadigm(BaseParadigm):
             self.mask_w = screen_w_px // 6
             self.mask_h = screen_h_px // 3
         else:
-            # ── 视口坐标映射 ──
-            # 3840×1080 Surround: 左屏物理中心 = (-960, 0), 右屏 = (+960, 0)
-            # Bezel 补偿: 拼缝处物理边框使两屏中心各向外偏移 bezel_width_px/2
-            # per_screen_w_px 用于 _deg_to_pix 的 px/cm 换算基准（单屏物理宽度）
             self.per_screen_w_px = screen_w_px // 2
             half_bezel = bezel_width_px // 2
             self.c_l = -(screen_w_px // 4 + half_bezel)
@@ -192,18 +240,6 @@ class LoomingParadigm(BaseParadigm):
                 "max": 200,
                 "label": "Bezel Width (px)",
             },
-            "PD Position (px)": {
-                "type": "str",
-                "default": "1850,1030",
-                "label": "PD Position (px)",
-            },
-            "PD Size (px)": {
-                "type": "int",
-                "default": 60,
-                "min": 10,
-                "max": 200,
-                "label": "PD Size (px)",
-            },
             "note": {
                 "type": "info",
                 "label": "This paradigm has fixed experiment patterns. Select a pattern above.",
@@ -214,7 +250,7 @@ class LoomingParadigm(BaseParadigm):
     def get_sync_channels(cls) -> List[str]:
         return ["Trial Active", "Phase Flip"]
 
-    def _build_stimulus_commands(self, side: str, theta: float) -> List[dict]:
+    def _build_stimulus_commands(self, side: str, theta: float, stim_active: bool = False) -> List[dict]:
         r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
         r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
 
@@ -276,12 +312,13 @@ class LoomingParadigm(BaseParadigm):
             "lineWidth": 0,
         }
 
+        sync = self._build_sync_markers(stim_active, "dual")
         if side == "left":
-            return [bg_l, stim_l, bg_r, stim_r, bezel]
+            return [bg_l, stim_l, bg_r, stim_r, bezel, *sync]
         elif side == "right":
-            return [bg_r, stim_r, bg_l, stim_l, bezel]
+            return [bg_r, stim_r, bg_l, stim_l, bezel, *sync]
         else:
-            return [bg_l, bg_r, stim_l, stim_r, bezel]
+            return [bg_l, bg_r, stim_l, stim_r, bezel, *sync]
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
         p = self.EXPERIMENT_PATTERNS[pattern_key]
@@ -329,7 +366,7 @@ class LoomingParadigm(BaseParadigm):
         px = r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
         return min(px, self.per_screen_w_px * 2.0)
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         cmds = self._build_stimulus_commands("both", self.init_deg)
         tel = {
             "phase": "Idle",
@@ -345,7 +382,7 @@ class LoomingParadigm(BaseParadigm):
                 "radius_ratio": self._deg_to_pix(self.init_deg) / self.per_screen_w_px,
             },
         }
-        return cmds, tel, [0, 0]
+        return cmds, tel
 
     def build_prewarm_commands(self) -> List[dict]:
         """Force-allocate GPU buffers at max radius before any trial starts.
@@ -371,7 +408,8 @@ class LoomingParadigm(BaseParadigm):
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         t_type = trial_context["type"]
         side = trial_context["screen_side"]
 
@@ -411,7 +449,7 @@ class LoomingParadigm(BaseParadigm):
                 theta = self.init_deg
                 stim_active = 1
 
-        cmds = self._build_stimulus_commands(side, theta)
+        cmds = self._build_stimulus_commands(side, theta, bool(stim_active))
 
         ui_color = (
             "lime"
@@ -435,7 +473,7 @@ class LoomingParadigm(BaseParadigm):
                 "radius_ratio": radius_ratio,
             },
         }
-        return is_done, cmds, tel, [stim_active, wind_active]
+        return is_done, cmds, tel
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +511,9 @@ class ClassicLoomingParadigm(BaseParadigm):
         bezel_width_px = int(self.config.get("Bezel Width (px)", 0))
 
         self.scale = 0.3 if debug_mode else 1.0
+        self._win_w = screen_w_px // 3 if debug_mode else screen_w_px
+        self._win_h = screen_h_px // 2 if debug_mode else screen_h_px
+        self._frame_counter = 0
 
         if debug_mode:
             self.per_screen_w_px = screen_w_px // 6
@@ -481,9 +522,6 @@ class ClassicLoomingParadigm(BaseParadigm):
             self.mask_w = screen_w_px // 6
             self.mask_h = screen_h_px // 3
         else:
-            # ── 视口坐标映射 ──
-            # 3840×1080 Surround: 左屏物理中心 = (-960, 0), 右屏 = (+960, 0)
-            # Bezel 补偿: 拼缝处物理边框使两屏中心各向外偏移 bezel_width_px/2
             self.per_screen_w_px = screen_w_px // 2
             half_bezel = bezel_width_px // 2
             self.c_l = -(screen_w_px // 4 + half_bezel)
@@ -541,18 +579,6 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "max": 200,
                 "label": "Bezel Width (px)",
             },
-            "PD Position (px)": {
-                "type": "str",
-                "default": "1850,1030",
-                "label": "PD Position (px)",
-            },
-            "PD Size (px)": {
-                "type": "int",
-                "default": 60,
-                "min": 10,
-                "max": 200,
-                "label": "PD Size (px)",
-            },
         }
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
@@ -599,7 +625,7 @@ class ClassicLoomingParadigm(BaseParadigm):
     def get_sync_channels(cls) -> List[str]:
         return ["Trial Active", "Phase Flip"]
 
-    def _build_stimulus_commands(self, side: str, theta: float) -> List[dict]:
+    def _build_stimulus_commands(self, side: str, theta: float, stim_active: bool = False) -> List[dict]:
         r_px_l = self._deg_to_pix(theta if side in ("left", "both") else self.init_deg)
         r_px_r = self._deg_to_pix(theta if side in ("right", "both") else self.init_deg)
 
@@ -661,14 +687,15 @@ class ClassicLoomingParadigm(BaseParadigm):
             "lineWidth": 0,
         }
 
+        sync = self._build_sync_markers(stim_active, "dual")
         if side == "left":
-            return [bg_l, stim_l, bg_r, stim_r, bezel]
+            return [bg_l, stim_l, bg_r, stim_r, bezel, *sync]
         elif side == "right":
-            return [bg_r, stim_r, bg_l, stim_l, bezel]
+            return [bg_r, stim_r, bg_l, stim_l, bezel, *sync]
         else:
-            return [bg_l, bg_r, stim_l, stim_r, bezel]
+            return [bg_l, bg_r, stim_l, stim_r, bezel, *sync]
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         cmds = self._build_stimulus_commands("both", self.init_deg)
         tel = {
             "phase": "Idle",
@@ -684,7 +711,7 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "radius_ratio": self._deg_to_pix(self.init_deg) / self.per_screen_w_px,
             },
         }
-        return cmds, tel, [0, 0]
+        return cmds, tel
 
     def build_prewarm_commands(self) -> List[dict]:
         """Force-allocate GPU buffers at max radius before any trial starts.
@@ -710,7 +737,8 @@ class ClassicLoomingParadigm(BaseParadigm):
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         lv_s = trial_context["lv_ratio_ms"] / 1000.0
         init_deg = trial_context["initial_angle_deg"]
         final_deg = trial_context["final_angle_deg"]
@@ -739,7 +767,7 @@ class ClassicLoomingParadigm(BaseParadigm):
             phase = "Looming"
             stim_active = 1
 
-        cmds = self._build_stimulus_commands(side, theta)
+        cmds = self._build_stimulus_commands(side, theta, bool(stim_active))
         ui_color = "lime" if phase == "Looming" else "cyan"
 
         tel = {
@@ -756,7 +784,7 @@ class ClassicLoomingParadigm(BaseParadigm):
                 "radius_ratio": self._deg_to_pix(theta) / self.per_screen_w_px,
             },
         }
-        return is_done, cmds, tel, [stim_active, 0]
+        return is_done, cmds, tel
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +821,9 @@ class OpticFlowParadigm(BaseParadigm):
         screen_h_px = int(self.config.get("Screen Height (px)", 1080))
         self.screen_w = float(screen_w_px // 3 if debug_mode else screen_w_px)
         self.screen_h = float(screen_h_px // 2 if debug_mode else screen_h_px)
+        self._win_w = self.screen_w
+        self._win_h = self.screen_h
+        self._frame_counter = 0
 
         half_w = self.screen_w / 2.0
         half_h = self.screen_h / 2.0
@@ -938,7 +969,7 @@ class OpticFlowParadigm(BaseParadigm):
 
         return ""
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         bg = {
             "id": "_bg",
             "type": "rect",
@@ -948,6 +979,7 @@ class OpticFlowParadigm(BaseParadigm):
             "fillColor": [0, 0, 0],
             "lineColor": [0, 0, 0],
         }
+        sync = self._build_sync_markers(False, "dual")
         tel = {
             "phase": "Idle",
             "hw_cmd": None,
@@ -960,11 +992,12 @@ class OpticFlowParadigm(BaseParadigm):
             },
             "ui_twin": None,
         }
-        return [bg], tel, [0, 0]
+        return [bg, *sync], tel
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         speed = trial_context["speed"]
         density = trial_context["density"]
 
@@ -1029,6 +1062,7 @@ class OpticFlowParadigm(BaseParadigm):
         }
         self._xys[:, 0] = self._x
         self._xys[:, 1] = self._y
+        sync = self._build_sync_markers(True, "dual")
         cmds = [
             bg,
             {
@@ -1039,9 +1073,9 @@ class OpticFlowParadigm(BaseParadigm):
                 "colors": self._colors,
                 "opacities": self._opacities,
             },
+            *sync,
         ]
 
-        phase_sq = 1 if (math.floor(elapsed_time * 10) % 2 == 0) else 0
         tel = {
             "phase": "OpticFlow",
             "hw_cmd": None,
@@ -1054,7 +1088,7 @@ class OpticFlowParadigm(BaseParadigm):
             },
             "ui_twin": None,
         }
-        return is_done, cmds, tel, [1, phase_sq]
+        return is_done, cmds, tel
 
 
 # ---------------------------------------------------------------------------
@@ -1093,6 +1127,9 @@ class MovementTraceParadigm(BaseParadigm):
         screen_h_px = int(self.config.get("Screen Height (px)", 1080))
         self.screen_w = float(screen_w_px // 3 if debug_mode else screen_w_px)
         self.screen_h = float(screen_h_px // 2 if debug_mode else screen_h_px)
+        self._win_w = self.screen_w
+        self._win_h = self.screen_h
+        self._frame_counter = 0
 
         self._t_accum = 0.0
         self._trail_x = np.zeros(self.n_trail, dtype=np.float64)
@@ -1200,7 +1237,7 @@ class MovementTraceParadigm(BaseParadigm):
 
         return ""
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         bg = {
             "id": "_bg",
             "type": "rect",
@@ -1210,6 +1247,7 @@ class MovementTraceParadigm(BaseParadigm):
             "fillColor": [0, 0, 0],
             "lineColor": [0, 0, 0],
         }
+        sync = self._build_sync_markers(False, "dual")
         tel = {
             "phase": "Idle",
             "hw_cmd": None,
@@ -1222,11 +1260,12 @@ class MovementTraceParadigm(BaseParadigm):
             },
             "ui_twin": None,
         }
-        return [bg], tel, [0, 0, 0, 0]
+        return [bg, *sync], tel
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         self._t_accum = elapsed_time * self.speed
         t = self._t_accum
 
@@ -1256,6 +1295,7 @@ class MovementTraceParadigm(BaseParadigm):
         }
         self._xys[:, 0] = self._trail_x
         self._xys[:, 1] = self._trail_y
+        sync = self._build_sync_markers(True, "dual")
         cmds = [
             bg,
             {
@@ -1266,15 +1306,10 @@ class MovementTraceParadigm(BaseParadigm):
                 "colors": self._trail_colors[::-1],
                 "opacities": self._opacities[::-1],
             },
+            *sync,
         ]
 
         is_done = elapsed_time >= self.trial_duration
-
-        q_right = 1 if x >= 0 else 0
-        q_upper = 1 if y >= 0 else 0
-        curr_sin = math.sin(self.freq_x * t)
-        node_trigger = 1 if (self._last_sin * curr_sin <= 0 and t > 0) else 0
-        self._last_sin = curr_sin
 
         tel = {
             "phase": "MovementTrace",
@@ -1288,7 +1323,7 @@ class MovementTraceParadigm(BaseParadigm):
             },
             "ui_twin": None,
         }
-        return is_done, cmds, tel, [q_right, q_upper, node_trigger, 0]
+        return is_done, cmds, tel
 
 
 # ---------------------------------------------------------------------------
@@ -1318,6 +1353,10 @@ class BlankParadigm(BaseParadigm):
         else:
             self.screen_w = float(screen_w_px)
             self.screen_h = float(screen_h_px)
+
+        self._win_w = self.screen_w
+        self._win_h = self.screen_h
+        self._frame_counter = 0
 
     @classmethod
     def get_available_patterns(cls) -> List[str]:
@@ -1377,7 +1416,8 @@ class BlankParadigm(BaseParadigm):
             "lineColor": [0, 0, 0],
         }
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
+        sync = self._build_sync_markers(False, "dual")
         tel = {
             "phase": "Idle",
             "hw_cmd": None,
@@ -1387,13 +1427,15 @@ class BlankParadigm(BaseParadigm):
             },
             "ui_twin": None,
         }
-        return [self._build_blank_bg()], tel, [0, 0]
+        return [self._build_blank_bg(), *sync], tel
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         is_done = elapsed_time >= trial_context["trial_duration"]
 
+        sync = self._build_sync_markers(True, "dual")
         tel = {
             "phase": "Blank",
             "hw_cmd": None,
@@ -1403,7 +1445,7 @@ class BlankParadigm(BaseParadigm):
             },
             "ui_twin": None,
         }
-        return is_done, [self._build_blank_bg()], tel, [0, 0]
+        return is_done, [self._build_blank_bg(), *sync], tel
 
 
 # ---------------------------------------------------------------------------
@@ -1453,6 +1495,9 @@ class GratingParadigm(BaseParadigm):
 
         screen_w_px = int(self.config.get("Screen Width (px)", 3840))
         screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+        self._win_w = screen_w_px // 3 if debug_mode else screen_w_px
+        self._win_h = screen_h_px // 2 if debug_mode else screen_h_px
+        self._frame_counter = 0
 
         if debug_mode:
             self.per_screen_w_px = screen_w_px // 6
@@ -1713,9 +1758,10 @@ class GratingParadigm(BaseParadigm):
 
     def get_idle_frame(
         self, hw_telemetry: dict
-    ) -> Tuple[List[dict], dict, List[int]]:
+    ) -> Tuple[List[dict], dict]:
+        is_single = bool(self.config.get("Single Screen Mode", True))
         trial_ctx = {
-            "Single Screen Mode": bool(self.config.get("Single Screen Mode", True)),
+            "Single Screen Mode": is_single,
             "sf": self.sf,
             "tf": self.tf,
             "ori": self.ori,
@@ -1723,6 +1769,9 @@ class GratingParadigm(BaseParadigm):
             "trial_duration": self.trial_duration,
         }
         cmds = self._build_grating_commands(0.0, trial_ctx)
+        mode = "single" if is_single else "dual"
+        sync = self._build_sync_markers(False, mode)
+        cmds.extend(sync)
         tel = {
             "phase": "Idle",
             "hw_cmd": None,
@@ -1736,20 +1785,25 @@ class GratingParadigm(BaseParadigm):
             },
             "ui_twin": self._build_ui_twin(self.ori, "both"),
         }
-        return cmds, tel, [0, 0]
+        return cmds, tel
 
     def process_frame(
         self,
         elapsed_time: float,
         trial_context: dict,
         hw_telemetry: dict,
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         is_done = elapsed_time >= trial_context["trial_duration"]
 
         tf = trial_context.get("tf", self.tf)
         dynamic_phase = (elapsed_time * tf) % 1.0
 
         cmds = self._build_grating_commands(dynamic_phase, trial_context)
+        is_single = trial_context.get("Single Screen Mode", True)
+        mode = "single" if is_single else "dual"
+        sync = self._build_sync_markers(True, mode)
+        cmds.extend(sync)
 
         tel = {
             "phase": "Grating",
@@ -1767,7 +1821,7 @@ class GratingParadigm(BaseParadigm):
                 trial_context.get("ori", self.ori), "both"
             ),
         }
-        return is_done, cmds, tel, [1, 0]
+        return is_done, cmds, tel
 
 
 # ---------------------------------------------------------------------------
@@ -1838,6 +1892,9 @@ class SingleLoomingParadigm(BaseParadigm):
         self._baseline_post = 1.5
 
         self.scale = 0.3 if debug_mode else 1.0
+        self._win_w = screen_w_px // 3 if debug_mode else screen_w_px
+        self._win_h = screen_h_px // 2 if debug_mode else screen_h_px
+        self._frame_counter = 0
 
         if debug_mode:
             self.per_screen_w_px = screen_w_px // 3
@@ -1877,18 +1934,6 @@ class SingleLoomingParadigm(BaseParadigm):
                 "max": 4320,
                 "label": "Screen Height (px)",
             },
-            "PD Position (px)": {
-                "type": "str",
-                "default": "1850,1030",
-                "label": "PD Position (px)",
-            },
-            "PD Size (px)": {
-                "type": "int",
-                "default": 60,
-                "min": 10,
-                "max": 200,
-                "label": "PD Size (px)",
-            },
             "note": {
                 "type": "info",
                 "label": "This paradigm has fixed experiment patterns. Select a pattern above.",
@@ -1899,7 +1944,7 @@ class SingleLoomingParadigm(BaseParadigm):
     def get_sync_channels(cls) -> List[str]:
         return ["Trial Active", "Phase Flip"]
 
-    def _build_stimulus_commands(self, theta: float) -> List[dict]:
+    def _build_stimulus_commands(self, theta: float, stim_active: bool = False) -> List[dict]:
         r_px = self._deg_to_pix(theta)
 
         _gray = [0, 0, 0]
@@ -1925,7 +1970,8 @@ class SingleLoomingParadigm(BaseParadigm):
             "lineWidth": 0,
             "edges": 256,
         }
-        return [bg, stim]
+        sync = self._build_sync_markers(stim_active, "single")
+        return [bg, stim, *sync]
 
     def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
         p = self.EXPERIMENT_PATTERNS[pattern_key]
@@ -1972,7 +2018,7 @@ class SingleLoomingParadigm(BaseParadigm):
         px = r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
         return min(px, self.per_screen_w_px * 2.0)
 
-    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict, List[int]]:
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         cmds = self._build_stimulus_commands(self.init_deg)
         tel = {
             "phase": "Idle",
@@ -1988,7 +2034,7 @@ class SingleLoomingParadigm(BaseParadigm):
                 "radius_ratio": self._deg_to_pix(self.init_deg) / self.per_screen_w_px,
             },
         }
-        return cmds, tel, [0, 0]
+        return cmds, tel
 
     def build_prewarm_commands(self) -> List[dict]:
         _gray = [0, 0, 0]
@@ -2002,7 +2048,8 @@ class SingleLoomingParadigm(BaseParadigm):
 
     def process_frame(
         self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
-    ) -> Tuple[bool, List[dict], dict, List[int]]:
+    ) -> Tuple[bool, List[dict], dict]:
+        self._frame_counter += 1
         t_type = trial_context["type"]
 
         is_done = False
@@ -2039,7 +2086,7 @@ class SingleLoomingParadigm(BaseParadigm):
                 theta = self.init_deg
                 stim_active = 1
 
-        cmds = self._build_stimulus_commands(theta)
+        cmds = self._build_stimulus_commands(theta, bool(stim_active))
 
         ui_color = (
             "lime"
@@ -2063,7 +2110,7 @@ class SingleLoomingParadigm(BaseParadigm):
                 "radius_ratio": radius_ratio,
             },
         }
-        return is_done, cmds, tel, [stim_active, wind_active]
+        return is_done, cmds, tel
 
 
 # ---------------------------------------------------------------------------

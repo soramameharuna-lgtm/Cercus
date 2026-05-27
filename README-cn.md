@@ -207,6 +207,99 @@ def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
 
 色彩空间采用 PsychoPy RGB 约定：`-1` = 纯黑，`0` = 中灰，`+1` = 纯白。
 
+#### 同步块协议（光电标记）
+
+> **架构说明**：旧版 `ScreenEnvironment` 类已废弃。底层 `CoreRenderer`（`src/core/render.py`）对光电标记与同步块实行**零感知** — 它仅盲绘收到的 `cmds` 指令。所有同步逻辑完全由范式（Paradigm）层封装，通过返回的指令包驱动。
+
+每个范式负责在其 `cmds` 列表末尾追加正确数量的光电同步块。框架提供 `BaseParadigm._build_sync_markers(is_active, mode)` 作为共享工具方法，范式也可自行实现坐标计算逻辑。
+
+**规范一：时钟与帧追踪**
+
+范式类必须维护内部帧计数器以驱动帧率闪烁指示。在 `prepare_trial`（或试次初始化阶段）重置 `self._frame_counter = 0`，并在每帧 `process_frame` 调用时自增：
+
+```python
+def prepare_trial(self, trial_context):
+    self._frame_counter = 0  # 试次开始时重置
+    return ""
+
+def process_frame(self, elapsed_time, trial_context, hw_telemetry):
+    self._frame_counter += 1
+    # ...
+```
+
+计数器驱动闪烁切换：`odd = self._frame_counter % 2 == 1`。
+
+**规范二：通道物理对齐**
+
+| 屏幕模式 | 色块数量 | 布局 |
+|---|---|---|
+| **双屏（Surround）** | 4 | 左下外侧、左下内侧、右下内侧、右下外侧 |
+| **单屏（Single）** | 2 | 右下角：内侧（试次状态）+ 外侧（帧率闪烁），紧凑并排 |
+
+- **双屏范式**必须在 `cmds` 末尾追加 4 个同步色块：最外侧色块随帧闪烁指示帧率，内侧色块常亮指示试次激活状态。
+- **单屏范式**必须在 `cmds` 末尾追加恰好 2 个同步色块，**两个色块必须紧凑并排放置在屏幕的同一角落（右下角）**，内侧色块常亮指示试次状态，外侧色块随帧闪烁指示帧率。
+
+```python
+# 单屏范式：在 process_frame / get_idle_frame 中调用
+sync = self._build_sync_markers(stim_active, "single")
+# 双屏范式：在 process_frame / get_idle_frame 中调用
+sync = self._build_sync_markers(stim_active, "dual")
+```
+
+**规范三：图层压栈顺序**
+
+所有同步/光电 `rect` 指令**必须置于 `cmds` 列表的最末尾**。这确保其在绝对顶层绘制，不被任何刺激物背景、遮罩或叠加层遮挡。
+
+```python
+cmds = []  # 刺激物绘制指令
+cmds.append({...})  # circle, rect, element_array 等
+
+# --- 同步块必须在最后追加 ---
+sync = self._build_sync_markers(is_active, "single")  # 或 "dual"
+cmds.extend(sync)
+return cmds
+```
+
+**标准参考实现**（`BaseParadigm._build_sync_markers`）：
+
+```python
+def _build_sync_markers(self, is_active: bool, mode: str) -> list[dict]:
+    off, on = [-1, -1, -1], [1, 1, 1]  # PsychoPy RGB 色彩空间
+    odd = (self._frame_counter % 2 == 1)
+    margin, w, h = 10, 60, 60
+    half_w, half_h = self._win_w / 2.0, self._win_h / 2.0
+
+    if mode == "single":
+        # 2 通道：右下角紧凑并排
+        flash_color = on if (is_active and odd) else off
+        active_color = on if is_active else off
+        positions = [
+            (half_w - margin - w * 1.5 - margin, -half_h + margin + h / 2),  # 内侧
+            (half_w - margin - w / 2, -half_h + margin + h / 2),              # 外侧
+        ]
+        colors = [active_color, flash_color]
+    elif mode == "dual":
+        # 4 通道：左下角对 + 右下角对
+        outer_color = on if (is_active and odd) else off
+        inner_color = on if is_active else off
+        positions = [
+            (-half_w + margin + w / 2, -half_h + margin + h / 2),
+            (-half_w + margin + w * 1.5 + margin, -half_h + margin + h / 2),
+            (half_w - margin - w * 1.5 - margin, -half_h + margin + h / 2),
+            (half_w - margin - w / 2, -half_h + margin + h / 2),
+        ]
+        colors = [outer_color, inner_color, inner_color, outer_color]
+
+    cmds = []
+    for i, (pos, color) in enumerate(zip(positions, colors)):
+        cmds.append({
+            "id": f"_sync_{i}", "type": "rect",
+            "width": w, "height": h, "pos": pos,
+            "fillColor": color, "lineColor": color, "lineWidth": 0,
+        })
+    return cmds
+```
+
 ### 步骤 5：全局注册
 
 新定义的范式类必须加入 `src/models/paradigm.py` 脚本底部的 `PARADIGM_REGISTRY` 字典进行注册，方可被主控面板解析调用：

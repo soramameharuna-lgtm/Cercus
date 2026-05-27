@@ -2,7 +2,7 @@
 
 ## Renderer Absolute Stateless
 
-- `render.py` (`CoreRenderer`, `ScreenEnvironment`) MUST remain a pure "command-receive and geometry-draw" engine.
+- `render.py` (`CoreRenderer`) MUST remain a pure "command-receive and geometry-draw" engine.
 - PROHIBITED: injecting ANY state machine tracking, time calculation, or business logic into the renderer.
 - The renderer accepts draw commands and outputs pixels. Nothing more.
 

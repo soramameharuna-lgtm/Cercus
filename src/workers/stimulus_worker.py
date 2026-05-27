@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 from src.core.hardware import SerialDaemon, MockSerialDaemon, KinematicsParser
 from src.core.kinematics import KinematicEngine
 from src.core.logger import GroundTruthLogger
-from src.core.render import CoreRenderer, ScreenEnvironment
+from src.core.render import CoreRenderer
 from src.models.paradigm import PARADIGM_REGISTRY
 
 
@@ -218,12 +218,9 @@ class GenericWorker:
     def _present(
         self,
         renderer: CoreRenderer,
-        env: ScreenEnvironment,
         cmds: list,
-        sync_states: List[int],
     ):
         renderer.draw_commands(cmds)
-        env.render(sync_states)
         renderer.flip()
 
     def run(self):
@@ -262,28 +259,10 @@ class GenericWorker:
                 wait_blanking=not debug,
             )
 
-            sync_topology: List[Dict[str, Any]] = self.config.get("Sync Topology", [])
-
-            # ── 光电块位置参数化 ──
-            # PD Position (px): "x,y" 绝对像素坐标 (从屏幕左上角)
-            # PD Size (px): 光电块边长
-            pd_pos = None
-            pd_raw = self.config.get("PD Position (px)", "")
-            if pd_raw and isinstance(pd_raw, str) and "," in pd_raw:
-                try:
-                    parts = pd_raw.split(",")
-                    pd_pos = (float(parts[0].strip()), float(parts[1].strip()))
-                except (ValueError, IndexError):
-                    pd_pos = None
-            pd_size = int(self.config.get("PD Size (px)", 60))
-
-            env = ScreenEnvironment(renderer.win, sync_topology, pd_pos=pd_pos, pd_size=pd_size)
-
             # --- Pre-warm: GPU 显存预分配 ---
             # 1) get_idle_frame 创建基础对象（bg rects, bezel, 小半径 circle）
-            _warm_cmds, _, _warm_sync = self.paradigm.get_idle_frame({})
+            _warm_cmds, _ = self.paradigm.get_idle_frame({})
             renderer.draw_commands(_warm_cmds)
-            env.render(_warm_sync)
             renderer.flip()
             # 2) build_prewarm_commands 以 max_deg 半径创建 circle（灰色填充=不可见）
             #    强制 GPU 分配最大尺寸 VBO/纹理，试次首帧仅做轻量属性更新
@@ -301,10 +280,10 @@ class GenericWorker:
                 hw_tel = self._drain_hardware(logger, hw_daemon)
                 if hw_daemon and not hw_daemon.is_alive():
                     raise HardwareDisconnectError("Serial daemon died")
-                cmds, tel, sync_states = self.paradigm.get_idle_frame(hw_tel)
+                cmds, tel = self.paradigm.get_idle_frame(hw_tel)
                 tel["phase"] = "Adaptation"
                 tel["ui_color"] = "#ff4d4d"
-                self._present(renderer, env, cmds, sync_states)
+                self._present(renderer, cmds)
                 self._push_telemetry_debounced(0, 0, 0, tel, hw_tel=hw_tel)
             # --- Pre-warm: generate trials & open session before any wait ---
             total_sessions = int(self.config["Total Sessions"])
@@ -333,10 +312,10 @@ class GenericWorker:
                     hw_tel = self._drain_hardware(logger, hw_daemon)
                     if hw_daemon and not hw_daemon.is_alive():
                         raise HardwareDisconnectError("Serial daemon died")
-                    cmds, tel, sync_states = self.paradigm.get_idle_frame(hw_tel)
+                    cmds, tel = self.paradigm.get_idle_frame(hw_tel)
                     tel["phase"] = "WAIT [SPACE] (Auto Start)"
                     tel["ui_color"] = "orange"
-                    self._present(renderer, env, cmds, sync_states)
+                    self._present(renderer, cmds)
                     self._push_telemetry_debounced(0, 0, 0, tel, hw_tel=hw_tel)
 
                     all_keys = self.event.getKeys()
@@ -391,12 +370,12 @@ class GenericWorker:
                                 hw_tel = self._drain_hardware(logger, hw_daemon)
                                 if hw_daemon and not hw_daemon.is_alive():
                                     raise HardwareDisconnectError("Serial daemon died")
-                                cmds, tel, sync_states = self.paradigm.get_idle_frame(
+                                cmds, tel = self.paradigm.get_idle_frame(
                                     hw_tel
                                 )
                                 tel["phase"] = f"ITI ({clock.getTime()-t_iti:.1f}s)"
                                 tel["ui_color"] = "orange"
-                                self._present(renderer, env, cmds, sync_states)
+                                self._present(renderer, cmds)
                                 self._push_telemetry_debounced(
                                     current_session, t_idx, len(trials), tel,
                                     hw_tel=hw_tel,
@@ -413,12 +392,12 @@ class GenericWorker:
                             hw_tel = self._drain_hardware(logger, hw_daemon)
                             if hw_daemon and not hw_daemon.is_alive():
                                 raise HardwareDisconnectError("Serial daemon died")
-                            cmds, tel, sync_states = self.paradigm.get_idle_frame(
+                            cmds, tel = self.paradigm.get_idle_frame(
                                 hw_tel
                             )
                             tel["phase"] = "Wait [SPACE]"
                             tel["ui_color"] = "orange"
-                            self._present(renderer, env, cmds, sync_states)
+                            self._present(renderer, cmds)
                             self._push_telemetry_debounced(
                                 current_session, t_idx, len(trials), tel,
                                 hw_tel=hw_tel,
@@ -449,7 +428,7 @@ class GenericWorker:
                             hw_tel = self._drain_hardware(logger, hw_daemon)
                             if hw_daemon and not hw_daemon.is_alive():
                                 raise HardwareDisconnectError("Serial daemon died")
-                            cmds, tel, sync_states = self.paradigm.get_idle_frame(
+                            cmds, tel = self.paradigm.get_idle_frame(
                                 hw_tel
                             )
                             tel["phase"] = (
@@ -458,7 +437,7 @@ class GenericWorker:
                                 f" S={self.kinematic_engine.move_speed:.1f}"
                             )
                             tel["ui_color"] = "yellow"
-                            self._present(renderer, env, cmds, sync_states)
+                            self._present(renderer, cmds)
                             self._push_telemetry_debounced(
                                 current_session, t_idx, len(trials), tel,
                                 hw_tel=hw_tel,
@@ -499,7 +478,7 @@ class GenericWorker:
                         if hw_daemon and not hw_daemon.is_alive():
                             raise HardwareDisconnectError("Serial daemon died")
 
-                        is_done, cmds, tel, sync_states = self.paradigm.process_frame(
+                        is_done, cmds, tel = self.paradigm.process_frame(
                             elap, trial, hw_tel
                         )
 
@@ -517,7 +496,7 @@ class GenericWorker:
                         if tel.get("hw_cmd"):
                             hw_daemon.send_command(tel["hw_cmd"])
 
-                        self._present(renderer, env, cmds, sync_states)
+                        self._present(renderer, cmds)
                         self._push_telemetry_debounced(
                             current_session, t_idx + 1, len(trials), tel,
                             hw_tel=hw_tel,
@@ -544,10 +523,10 @@ class GenericWorker:
                             hw_tel = self._drain_hardware(logger, hw_daemon)
                             if hw_daemon and not hw_daemon.is_alive():
                                 raise HardwareDisconnectError("Serial daemon died")
-                            cmds, tel, sync_states = self.paradigm.get_idle_frame(hw_tel)
+                            cmds, tel = self.paradigm.get_idle_frame(hw_tel)
                             tel["phase"] = f"ISI ({clock.getTime()-t_isi:.1f}s)"
                             tel["ui_color"] = "orange"
-                            self._present(renderer, env, cmds, sync_states)
+                            self._present(renderer, cmds)
                             self._push_telemetry_debounced(
                                 current_session, 0, len(trials), tel, hw_tel=hw_tel
                             )

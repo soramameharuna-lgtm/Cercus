@@ -63,9 +63,10 @@ class KinematicsParser:
             raw_dy = float(out[idx_map["dy"]])
             raw_dz = float(out[idx_map["dz"]])
             # bandpass filter: reject micro-noise and optical spikes
-            if abs(raw_dx) < 2.5: raw_dx = 0.0
-            if abs(raw_dy) < 2.5: raw_dy = 0.0
-            if abs(raw_dz) < 2.5: raw_dz = 0.0
+            # deadzone
+            if abs(raw_dx) < 6: raw_dx = 0.0
+            if abs(raw_dy) < 6: raw_dy = 0.0
+            if abs(raw_dz) < 6: raw_dz = 0.0
             m = self._calib_matrix
             out[idx_map["dx"]] = raw_dx * m[0][0] + raw_dy * m[0][1] + raw_dz * m[0][2]
             out[idx_map["dy"]] = raw_dx * m[1][0] + raw_dy * m[1][1] + raw_dz * m[1][2]
