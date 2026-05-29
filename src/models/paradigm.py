@@ -130,6 +130,321 @@ class BaseParadigm(ABC):
     def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
         pass
 
+# ---------------------------------------------------------------------------
+# Looming + Airflow(Visual + Window only, configurable)
+# ---------------------------------------------------------------------------
+
+class SingleMonitorMultimodalParadigm(BaseParadigm):
+    EXPERIMENT_PATTERNS = {
+        "Baseline Visual": {
+            "type": "baseline_visual",
+            "target_ttc_ms": None,
+        },
+        "Baseline Wind": {
+            "type": "baseline_wind",
+            "target_ttc_ms": None,
+        },
+        # l/vが可変になるため、ラベルから特定の角度(°)表記を外しTTCのみにしています
+        "Looming + Wind (TTC -373ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": -373,
+        },
+        "Looming + Wind (TTC -308ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": -308,
+        },
+        "Looming + Wind (TTC -261ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": -261,
+        },
+        "Looming + Wind (TTC -225ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": -225,
+        },
+        "Looming + Wind (TTC -119ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": -119,
+        },
+        "Looming + Wind (TTC 0ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": 0,
+        },
+        "Looming + Wind (TTC +200ms)": {
+            "type": "looming_wind",
+            "target_ttc_ms": 200,
+        },
+    }
+
+    def __init__(self, debug_mode: bool = False, config: dict = None):
+        self.config = config or {}
+        self.viewing_distance_cm = float(self.config.get("Viewing Distance (cm)", 30.0))
+        self.screen_width_cm = float(self.config.get("Screen Width (cm)", 53.0))
+
+        # GUIから動的に取得（未設定時のフォールバックとして_schema_defaultを使用）
+        self.lv_ratio_ms = float(
+            self.config.get("l/v Ratio (ms)", self._schema_default("l/v Ratio (ms)"))
+        )
+        self.init_deg = float(
+            self.config.get("Initial Degree (°)", self._schema_default("Initial Degree (°)"))
+        )
+        self.max_deg = float(
+            self.config.get("Final Degree (°)", self._schema_default("Final Degree (°)"))
+        )
+
+        screen_w_px = int(self.config.get("Screen Width (px)", 1920))
+        screen_h_px = int(self.config.get("Screen Height (px)", 1080))
+
+        self._baseline_delay = 1.0
+        self._baseline_post = 1.5
+
+        self.scale = 0.3 if debug_mode else 1.0
+        self._win_w = screen_w_px // 3 if debug_mode else screen_w_px
+        self._win_h = screen_h_px // 2 if debug_mode else screen_h_px
+        self._frame_counter = 0
+
+        if debug_mode:
+            self.per_screen_w_px = screen_w_px // 3
+            self.mask_w = screen_w_px // 3
+            self.mask_h = screen_h_px // 2
+        else:
+            self.per_screen_w_px = screen_w_px
+            self.mask_w = screen_w_px
+            self.mask_h = screen_h_px
+
+        self.init_px = self._deg_to_pix(self.init_deg)
+
+    @classmethod
+    def get_available_patterns(cls) -> List[str]:
+        return list(cls.EXPERIMENT_PATTERNS.keys())
+
+    @classmethod
+    def get_parameter_schema(cls) -> Dict[str, Dict[str, Any]]:
+        # Single Looming と Classic Looming のスキーマを結合
+        return {
+            "l/v Ratio (ms)": {
+                "type": "float",
+                "default": 120.0,
+                "min": 1.0,
+                "max": 1000.0,
+                "label": "l/v Ratio (ms)",
+            },
+            "Initial Degree (°)": {
+                "type": "float",
+                "default": 4.0,
+                "min": 0.1,
+                "max": 179.0,
+                "label": "Initial Degree (°)",
+            },
+            "Final Degree (°)": {
+                "type": "float",
+                "default": 100.0,
+                "min": 1.0,
+                "max": 179.9,
+                "label": "Final Degree (°)",
+            },
+            "Execution Mode": {
+                "type": "choice",
+                "default": "Auto",
+                "choices": ["Auto", "Manual", "Kinematic"],
+                "label": "Execution Mode",
+            },
+            "Screen Width (px)": {
+                "type": "int",
+                "default": 1920,
+                "min": 100,
+                "max": 7680,
+                "label": "Screen Width (px)",
+            },
+            "Screen Height (px)": {
+                "type": "int",
+                "default": 1080,
+                "min": 100,
+                "max": 4320,
+                "label": "Screen Height (px)",
+            },
+            "Number of Trials": {
+                "type": "int",
+                "default": 100,
+                "min": 1,
+                "max": 9999,
+                "label": "Number of Trials",
+            },
+        }
+
+    @classmethod
+    def get_sync_channels(cls) -> List[str]:
+        return ["Trial Active", "Phase Flip"]
+
+    def _build_stimulus_commands(self, theta: float, stim_active: bool = False) -> List[dict]:
+        r_px = self._deg_to_pix(theta)
+
+        _gray = [0, 0, 0]
+        _black = [-1, -1, -1]
+
+        bg = {
+            "id": "_bg", "type": "rect", "width": self.mask_w, "height": self.mask_h,
+            "pos": (0, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0,
+        }
+        stim = {
+            "id": "stim", "type": "circle", "radius": r_px, "pos": (0, 0),
+            "fillColor": _black, "lineColor": _black, "lineWidth": 0, "edges": 256,
+        }
+        
+        # ガイドライン Rule 3: 同期マーカーはシングル画面用に最後に必ず追加する
+        sync = self._build_sync_markers(stim_active, "single")
+        return [bg, stim, *sync]
+
+    def generate_trials(self, pattern_key: str) -> List[Dict[str, Any]]:
+        p = self.EXPERIMENT_PATTERNS[pattern_key]
+        num_trials = int(self.config.get("Number of Trials", self._schema_default("Number of Trials")))
+        trials = []
+        for _ in range(num_trials):
+                d = {
+                    "type": p["type"],
+                    "target_ttc_ms": p["target_ttc_ms"],
+                    "lv_ratio_ms": self.lv_ratio_ms,
+                    "initial_angle_deg": self.init_deg,
+                    "final_angle_deg": self.max_deg,
+                }
+                if p["type"] == "baseline_visual":
+                    d["wind_dir"], d["screen_side"] = "none", "center"
+                else:
+                    d["wind_dir"], d["screen_side"] = "center", "center"
+                trials.append(d)
+        return trials
+
+    def prepare_trial(self, trial_context: dict) -> str:
+        # ガイドライン Rule 1: trial開始時にフレームカウンターをリセット
+        self._frame_counter = 0 
+        
+        if trial_context["type"] == "looming_wind":
+            wind_dir = trial_context.get("wind_dir", "none")
+            if wind_dir == "none":
+                return ""
+            
+            # GUIで設定された l/v 比と初期角度を計算に利用
+            lv_s = trial_context.get("lv_ratio_ms", 100) / 1000.0
+            init_rad = math.radians(trial_context["initial_angle_deg"] / 2)
+            t_col_s = lv_s / math.tan(init_rad) if math.tan(init_rad) != 0 else 0
+            
+            delay_ms = max(
+                0, int(round(t_col_s * 1000)) + trial_context["target_ttc_ms"]
+            )
+            dir_char = "R" if wind_dir == "right" else "L"
+            return f"<{dir_char},{delay_ms}>"
+            
+        elif trial_context["type"] == "baseline_wind":
+            self._baseline_delay = random.uniform(0.1, 1.2)
+            self._baseline_post = random.uniform(1.0, 2.0)
+            wind_dir = trial_context.get("wind_dir", "none")
+            if wind_dir != "none":
+                dir_char = "R" if wind_dir == "right" else "L"
+                delay_ms = int(round(self._baseline_delay * 1000))
+                return f"<{dir_char},{delay_ms}>"
+        return ""
+
+    def _deg_to_pix(self, deg: float) -> float:
+        deg = min(deg, 179.99)
+        r_cm = math.tan(math.radians(deg / 2.0)) * self.viewing_distance_cm
+        px = r_cm * (self.per_screen_w_px / self.screen_width_cm) * self.scale
+        return min(px, self.per_screen_w_px * 2.0)
+
+    def get_idle_frame(self, hw_telemetry: dict) -> Tuple[List[dict], dict]:
+        cmds = self._build_stimulus_commands(self.init_deg)
+        tel = {
+            "phase": "Idle",
+            "hw_cmd": None,
+            "ui_color": "cyan",
+            "ui_metrics": {
+                "theta": self.init_deg,
+                "side": "center",
+                **hw_telemetry,
+            },
+            "ui_twin": {
+                "side": "center",
+                "radius_ratio": self._deg_to_pix(self.init_deg) / self.per_screen_w_px,
+            },
+        }
+        return cmds, tel
+
+    def build_prewarm_commands(self) -> List[dict]:
+        _gray = [0, 0, 0]
+        max_r = self._deg_to_pix(self.max_deg)
+        return [
+            {"id": "_bg", "type": "rect", "width": self.mask_w, "height": self.mask_h,
+             "pos": (0, 0), "fillColor": _gray, "lineColor": _gray, "lineWidth": 0},
+            {"id": "stim", "type": "circle", "radius": max_r, "pos": (0, 0),
+             "fillColor": _gray, "lineColor": _gray, "lineWidth": 0, "edges": 256},
+        ]
+
+    def process_frame(
+        self, elapsed_time: float, trial_context: dict, hw_telemetry: dict
+    ) -> Tuple[bool, List[dict], dict]:
+        # ガイドライン Rule 1: 毎フレームカウントアップ
+        self._frame_counter += 1
+        
+        t_type = trial_context["type"]
+        init_deg = trial_context.get("initial_angle_deg", self.init_deg)
+        final_deg = trial_context.get("final_angle_deg", self.max_deg)
+
+        is_done = False
+        theta = init_deg
+        hw_cmd = None
+        phase = "Trial"
+        stim_active = 0
+        wind_active = 0
+
+        if t_type in ["looming_wind", "baseline_visual"]:
+            lv_s = trial_context.get("lv_ratio_ms", 100) / 1000.0
+            init_rad = math.radians(init_deg / 2)
+            t_col = lv_s / math.tan(init_rad) if math.tan(init_rad) != 0 else 0
+
+            if elapsed_time >= t_col + 1.0:
+                is_done = True
+                phase = "PostLooming_End"
+            elif elapsed_time >= t_col:
+                theta = final_deg
+                phase = "Collision_TTC0"
+                stim_active = 1
+            else:
+                delta = max(t_col - elapsed_time, 0.001)
+                theta = math.degrees(2 * math.atan(lv_s / delta))
+                theta = min(theta, final_deg)
+                phase = "Looming"
+                stim_active = 1
+
+        elif t_type == "baseline_wind":
+            if elapsed_time >= (self._baseline_delay + self._baseline_post):
+                is_done = True
+            else:
+                phase = "Baseline"
+                theta = init_deg
+                stim_active = 1
+
+        cmds = self._build_stimulus_commands(theta, bool(stim_active))
+
+        ui_color = (
+            "lime" if phase == "Looming"
+            else ("yellow" if phase == "Collision_TTC0"
+            else ("red" if phase == "PostLooming_End"
+            else ("orange" if phase == "Baseline" else "cyan")))
+        )
+        radius_ratio = self._deg_to_pix(theta) / self.per_screen_w_px
+        tel = {
+            "phase": phase,
+            "hw_cmd": hw_cmd,
+            "ui_color": ui_color,
+            "ui_metrics": {
+                "theta": round(theta, 1),
+                "side": "center",
+                **hw_telemetry,
+            },
+            "ui_twin": {
+                "side": "center",
+                "radius_ratio": radius_ratio,
+            },
+        }
+        return is_done, cmds, tel
 
 # ---------------------------------------------------------------------------
 # Looming Paradigm (Multi-modal: Visual + Wind)
@@ -2118,6 +2433,7 @@ class SingleLoomingParadigm(BaseParadigm):
 # ---------------------------------------------------------------------------
 
 PARADIGM_REGISTRY: Dict[str, type] = {
+    "SingleMonitorMultimodalParadigm": SingleMonitorMultimodalParadigm,
     "Looming": LoomingParadigm,
     "ClassicLooming": ClassicLoomingParadigm,
     "OpticFlow": OpticFlowParadigm,
